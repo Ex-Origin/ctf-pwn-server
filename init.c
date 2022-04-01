@@ -201,7 +201,7 @@ int init_handle()
             }
             else
             {
-                log_printf("INIT  : pid: %d    stopped by signal %s\n", pid, WSTOPSIG(status));
+                log_printf("INIT  : pid: %d    stopped by signal %d\n", pid, WSTOPSIG(status));
             }
         }
         else if (WIFCONTINUED(status))
