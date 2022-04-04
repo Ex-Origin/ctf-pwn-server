@@ -28,11 +28,13 @@
 #include <linux/sock_diag.h>
 #include <linux/inet_diag.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 #define INIT_LOG "/var/log/init.log"
 // the maximum instances of this service per source IP address
 #define PER_SOURCE 10
 #define PORT 10000
+#define TIMEOUT 600
 
 #define CLEAN_DAEMON
 #define LIMIT_IP
@@ -227,6 +229,7 @@ int proc_check(char *pid_str)
     int fd;
     int uid = 0, pid = 0, ppid = 0;
     char *tmp;
+    struct stat sb;
 
     memset(path, 0, sizeof(path));
     strncpy(path, "/proc/", sizeof(path) - 1);
@@ -237,6 +240,7 @@ int proc_check(char *pid_str)
     {
         memset(status_buf, 0, sizeof(status_buf));
         CHECK(read(fd, status_buf, sizeof(status_buf)) != -1);
+        CHECK(fstat(fd, &sb) != -1);
         close(fd);
 
         if((tmp = strstr(status_buf, "Pid:")) != NULL)
@@ -271,6 +275,13 @@ int proc_check(char *pid_str)
         {
             kill(pid, SIGKILL);
             log_printf("CLEAN : Killed daemon process (uid=%d, pid=%d)\n", uid, pid);
+            result = uid;
+        }
+
+        if(uid != 0 && (time(NULL) - sb.st_ctime) > TIMEOUT)
+        {
+            kill(pid, SIGKILL);
+            log_printf("CLEAN : Killed timeout process (uid=%d, pid=%d)\n", uid, pid);
             result = uid;
         }
     }
@@ -357,8 +368,11 @@ int start_service()
     char *child_args[] = {"/bin/bash", NULL};
     struct rlimit limit;
 
-    limit.rlim_cur = 10 * 60;
-    limit.rlim_max = 10 * 60;
+    CHECK(setgid(2301) != -1);
+    CHECK(setuid(2301) != -1);
+
+    limit.rlim_cur = TIMEOUT;
+    limit.rlim_max = TIMEOUT;
     CHECK(setrlimit(RLIMIT_CPU, &limit) != -1);
 
     limit.rlim_cur = 256;
@@ -368,11 +382,6 @@ int start_service()
     limit.rlim_cur = 0x40000000; // 1024M
     limit.rlim_max = 0x40000000;
     CHECK(setrlimit(RLIMIT_AS, &limit) != -1);
-
-    alarm(10 * 60);
-
-    setgid(2301);
-    setuid(2301);
 
     return execv(child_args[0], child_args);
 }
@@ -528,6 +537,43 @@ int receive_and_count(int fd, in_addr_t target)
 }
 #endif
 
+void handle_service_child(int sig)
+{
+    int pid = 0, status = 0;
+    
+    pid = wait(&status);
+    if (WIFEXITED(status))
+    {
+        log_printf("PWN   : pid: %d    exited, status = %d\n", pid, WEXITSTATUS(status));
+    }
+    else if (WIFSIGNALED(status))
+    {
+        if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
+        {
+            log_printf("PWN   : pid: %d    killed by signal %s\n", pid, sig_name[WTERMSIG(status)]);
+        }
+        else
+        {
+            log_printf("PWN   : pid: %d    killed by signal %d\n", pid, WTERMSIG(status));
+        }
+    }
+    else if (WIFSTOPPED(status))
+    {
+        if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
+        {
+            log_printf("PWN   : pid: %d    stopped by signal %s\n", pid, sig_name[WSTOPSIG(status)]);
+        }
+        else
+        {
+            log_printf("PWN   : pid: %d    stopped by signal %d\n", pid, WSTOPSIG(status));
+        }
+    }
+    else if (WIFCONTINUED(status))
+    {
+        log_printf("PWN   : pid: %d    continued\n", pid);
+    }
+}
+
 int pwn_service()
 {
     struct sockaddr_in server_addr, client_addr, target_addr;
@@ -574,7 +620,7 @@ int pwn_service()
 
     listen(server_socket, 10);
 
-    signal(SIGCHLD, SIG_IGN);
+    signal(SIGCHLD, handle_service_child);
 
     for(;;)
     {
@@ -589,7 +635,7 @@ int pwn_service()
         if(existed_num <= PER_SOURCE)
 #endif
         {
-            timeout.tv_sec = 10 * 60;
+            timeout.tv_sec = TIMEOUT;
             timeout.tv_usec = 0;
             CHECK(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != -1);
             CHECK(setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
@@ -597,14 +643,20 @@ int pwn_service()
             pid = fork();
             if(pid == 0)
             {
-                dup2(client_socket, STDIN_FILENO);
-                dup2(client_socket, STDOUT_FILENO);
-                dup2(client_socket, STDERR_FILENO);
-                close(server_socket);
-                close(client_socket);
-                close(sock_fd);
+                CHECK(dup2(client_socket, STDIN_FILENO) != -1);
+                CHECK(dup2(client_socket, STDOUT_FILENO) != -1);
+                CHECK(dup2(client_socket, STDERR_FILENO) != -1);
+
+                CHECK(close(server_socket) != -1);
+                CHECK(close(client_socket) != -1);
+                CHECK(close(sock_fd) != -1);
+
+                CHECK(setsid() != -1);
+
                 start_service();
-                exit(EXIT_SUCCESS);
+
+                for(;;)
+                    exit(EXIT_SUCCESS);
             }
 
             if(pid != -1)
