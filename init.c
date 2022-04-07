@@ -581,7 +581,10 @@ int handle_service_child(int pid)
     return result;
 }
 
-int handle_accept(int server_socket, int sock_fd)
+/**
+ * The fd1 & fd2 are unnecessary for the child process.
+ */
+int handle_accept(int server_socket, int sock_fd, int fd1, int fd2)
 {
     int struct_len;
     struct sockaddr_in client_addr;
@@ -619,6 +622,8 @@ int handle_accept(int server_socket, int sock_fd)
             CHECK(close(server_socket) != -1);
             CHECK(close(client_socket) != -1);
             CHECK(close(sock_fd) != -1);
+            CHECK(close(fd1) != -1);
+            CHECK(close(fd2) != -1);
 
             CHECK(setsid() != -1);
 
@@ -737,7 +742,7 @@ int pwn_service()
                 switch (fdsi.ssi_signo)
                 {
                 case SIGCHLD:
-                    handle_service_child(fdsi.ssi_pid);
+                    handle_accept(server_socket, sock_fd, epollfd, sfd);
                     break;
                 
                 default:
