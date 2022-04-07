@@ -29,6 +29,8 @@
 #include <linux/inet_diag.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/epoll.h>
+#include <sys/signalfd.h>
 
 #define INIT_LOG "/var/log/init.log"
 // the maximum instances of this service per source IP address
@@ -322,6 +324,8 @@ int clean_handle()
             pid = fork();
             if(pid != -1)
             {
+                CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
+
                 if(pid == 0 && setuid(uid) == 0) // Child
                 {
                     kill(-1, SIGKILL);
@@ -537,55 +541,136 @@ int receive_and_count(int fd, in_addr_t target)
 }
 #endif
 
-void handle_service_child(int sig)
+int handle_service_child(int pid)
 {
-    int pid = 0, status = 0;
+    int recv_pid = 0, status = 0;
+    int result = 0;
     
-    pid = wait(&status);
+    recv_pid = waitpid(pid, &status, 0);
     if (WIFEXITED(status))
     {
-        log_printf("PWN   : pid: %d    exited, status = %d\n", pid, WEXITSTATUS(status));
+        log_printf("PWN   : pid: %d    exited, status = %d\n", recv_pid, WEXITSTATUS(status));
     }
     else if (WIFSIGNALED(status))
     {
         if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
         {
-            log_printf("PWN   : pid: %d    killed by signal %s\n", pid, sig_name[WTERMSIG(status)]);
+            log_printf("PWN   : pid: %d    killed by signal %s\n", recv_pid, sig_name[WTERMSIG(status)]);
         }
         else
         {
-            log_printf("PWN   : pid: %d    killed by signal %d\n", pid, WTERMSIG(status));
+            log_printf("PWN   : pid: %d    killed by signal %d\n", recv_pid, WTERMSIG(status));
         }
     }
     else if (WIFSTOPPED(status))
     {
         if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
         {
-            log_printf("PWN   : pid: %d    stopped by signal %s\n", pid, sig_name[WSTOPSIG(status)]);
+            log_printf("PWN   : pid: %d    stopped by signal %s\n", recv_pid, sig_name[WSTOPSIG(status)]);
         }
         else
         {
-            log_printf("PWN   : pid: %d    stopped by signal %d\n", pid, WSTOPSIG(status));
+            log_printf("PWN   : pid: %d    stopped by signal %d\n", recv_pid, WSTOPSIG(status));
         }
     }
     else if (WIFCONTINUED(status))
     {
-        log_printf("PWN   : pid: %d    continued\n", pid);
+        log_printf("PWN   : pid: %d    continued\n", recv_pid);
     }
+
+    return result;
+}
+
+int handle_accept(int server_socket, int sock_fd)
+{
+    int struct_len;
+    struct sockaddr_in client_addr;
+    struct timeval timeout; 
+    int client_socket;
+    int existed_num;
+    int pid;
+    int result = 0;
+
+    struct_len = sizeof(struct sockaddr_in);
+    memset(&client_addr, 0, sizeof(client_addr));
+    client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &struct_len);
+
+#ifdef LIMIT_IP
+    send_query(sock_fd);
+    existed_num = receive_and_count(sock_fd, client_addr.sin_addr.s_addr);
+
+    if(existed_num <= PER_SOURCE)
+#endif
+    {
+        timeout.tv_sec = TIMEOUT;
+        timeout.tv_usec = 0;
+        CHECK(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != -1);
+        CHECK(setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
+
+        pid = fork();
+        if(pid == 0)
+        {
+            CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
+
+            CHECK(dup2(client_socket, STDIN_FILENO) != -1);
+            CHECK(dup2(client_socket, STDOUT_FILENO) != -1);
+            CHECK(dup2(client_socket, STDERR_FILENO) != -1);
+
+            CHECK(close(server_socket) != -1);
+            CHECK(close(client_socket) != -1);
+            CHECK(close(sock_fd) != -1);
+
+            CHECK(setsid() != -1);
+
+            start_service();
+
+            for(;;)
+                exit(EXIT_SUCCESS);
+        }
+
+        if(pid != -1)
+        {
+            log_printf("PWN   : receive %s:%d with pid %d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, pid);
+            result = 0;
+        }
+        else
+        {
+            log_printf("PWN   : receive %s:%d, fork error : Resource temporarily unavailable\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+            CHECK(write(client_socket, "Resource temporarily unavailable\n", 33) != -1);
+            result = -1;
+        }
+    }
+#ifdef LIMIT_IP
+    else
+    {
+        log_printf("PWN   : ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+        CHECK(write(client_socket, "Blocked by pwn-service\n", 23) != -1);
+        result = -1;
+    }
+#endif   
+
+    close(client_socket);
+
+    return result;
 }
 
 int pwn_service()
 {
-    struct sockaddr_in server_addr, client_addr, target_addr;
-    int value, struct_len;
-    int server_socket, client_socket;
-    int pid;
-    struct timeval timeout; 
+    struct sockaddr_in server_addr, target_addr;
+    int value;
+    int server_socket;
     int sock_fd;
     struct sockaddr_nl src_addr;
-    int existed_num;
+    int epollfd;
+    struct epoll_event ev, events[2];
+    sigset_t mask;
+    int sfd;
+    struct signalfd_siginfo fdsi;
+    int nfds;
+    int i;
 
     CHECK(prctl(PR_SET_NAME, "pwn-service", NULL, NULL, NULL) != -1);
+    CHECK((epollfd = epoll_create(2)) != -1);
 
 #ifdef LIMIT_IP
     // https://man7.org/linux/man-pages/man7/sock_diag.7.html
@@ -620,64 +705,51 @@ int pwn_service()
 
     listen(server_socket, 10);
 
-    signal(SIGCHLD, handle_service_child);
+    ev.events = EPOLLIN;
+    ev.data.fd = server_socket;
+    CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socket, &ev) != -1);
+
+    // Handle SIGCHLD
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+
+    /* Block signals so that they aren't handled
+    according to their default dispositions */
+    CHECK(sigprocmask(SIG_BLOCK, &mask, NULL) != -1);
+    CHECK((sfd = signalfd(-1, &mask, 0)) != -1);
+
+    ev.events = EPOLLIN;
+    ev.data.fd = sfd;
+    CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, sfd, &ev) != -1);
 
     for(;;)
     {
-        struct_len = sizeof(struct sockaddr_in);
-        memset(&client_addr, 0, sizeof(client_addr));
-        client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &struct_len);
-
-#ifdef LIMIT_IP
-        send_query(sock_fd);
-        existed_num = receive_and_count(sock_fd, client_addr.sin_addr.s_addr);
-
-        if(existed_num <= PER_SOURCE)
-#endif
+        CHECK((nfds = epoll_wait(epollfd, events, 2, -1)) != -1);
+        for(i = 0; i < nfds; i++)
         {
-            timeout.tv_sec = TIMEOUT;
-            timeout.tv_usec = 0;
-            CHECK(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != -1);
-            CHECK(setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
-
-            pid = fork();
-            if(pid == 0)
+            if(events[i].data.fd == server_socket)
             {
-                CHECK(dup2(client_socket, STDIN_FILENO) != -1);
-                CHECK(dup2(client_socket, STDOUT_FILENO) != -1);
-                CHECK(dup2(client_socket, STDERR_FILENO) != -1);
-
-                CHECK(close(server_socket) != -1);
-                CHECK(close(client_socket) != -1);
-                CHECK(close(sock_fd) != -1);
-
-                CHECK(setsid() != -1);
-
-                start_service();
-
-                for(;;)
-                    exit(EXIT_SUCCESS);
+                handle_accept(server_socket, sock_fd);
             }
-
-            if(pid != -1)
+            else if(events[i].data.fd == sfd)
             {
-                log_printf("PWN   : receive %s:%d with pid %d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, pid);
+                CHECK(read(sfd, &fdsi, sizeof(struct signalfd_siginfo)) == sizeof(struct signalfd_siginfo));
+                switch (fdsi.ssi_signo)
+                {
+                case SIGCHLD:
+                    handle_service_child(fdsi.ssi_pid);
+                    break;
+                
+                default:
+                    fprintf(stderr, "PWN   : Error : Unknown ssi_signo %s:%d: %m\n", __FILE__, __LINE__);
+                    break;
+                }
             }
             else
             {
-                log_printf("PWN   : receive %s:%d, fork error : Resource temporarily unavailable\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
-                CHECK(write(client_socket, "Resource temporarily unavailable\n", 33) != -1);
+                fprintf(stderr, "PWN   : Error : Unknown fd %s:%d: %m\n", __FILE__, __LINE__);
             }
         }
-#ifdef LIMIT_IP
-        else
-        {
-            log_printf("PWN   : ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
-            CHECK(write(client_socket, "Blocked by pwn-service\n", 23) != -1);
-        }
-#endif   
-
-        close(client_socket);
     }
 
     return 0;
@@ -710,6 +782,7 @@ int main(int argc, char **argv, char **envp)
     CHECK((pid = fork()) != -1);
     if(pid == 0)
     {
+        CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
         log_printf("CLEAN : clean_handle start with pid %d\n", getpid());
         clean_handle();
         log_printf("CLEAN : clean_handle end\n");
@@ -725,6 +798,7 @@ int main(int argc, char **argv, char **envp)
     if(pid == 0)
 #endif 
     {
+        CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
         log_printf("PWN   : pwn_service start with pid %d\n", getpid());
         pwn_service();
         log_printf("PWN   : pwn_service end\n");
