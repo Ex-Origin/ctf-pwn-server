@@ -221,6 +221,7 @@ int init_handle()
 /**
  * Return:
  *  0  check success
+ *  -1 check failed
  *  or return uid
  */
 int proc_check(char *pid_str)
@@ -228,7 +229,7 @@ int proc_check(char *pid_str)
     char path[0x100];
     char status_buf[0x1000];
     int result = 0;
-    int fd;
+    int fd = -1;
     int uid = 0, pid = 0, ppid = 0;
     char *tmp;
     struct stat sb;
@@ -238,13 +239,12 @@ int proc_check(char *pid_str)
     strncat(path, pid_str, sizeof(path) - 1);
     strncat(path, "/status", sizeof(path) - 1);
 
-    if((fd  = open(path, O_RDONLY)) != -1)
+    memset(status_buf, 0, sizeof(status_buf));
+    memset(&sb, 0, sizeof(struct stat));
+    if((fd  = open(path, O_RDONLY)) != -1 && 
+        read(fd, status_buf, sizeof(status_buf)) != -1 &&
+        fstat(fd, &sb) != -1)
     {
-        memset(status_buf, 0, sizeof(status_buf));
-        CHECK(read(fd, status_buf, sizeof(status_buf)) != -1);
-        CHECK(fstat(fd, &sb) != -1);
-        close(fd);
-
         if((tmp = strstr(status_buf, "Pid:")) != NULL)
         {
             pid = atoi(tmp + 4);
@@ -287,7 +287,17 @@ int proc_check(char *pid_str)
             result = uid;
         }
     }
+    else
+    {
+        log_printf("CLEAN : open|read|fstat error : %m (pid=%s)\n", pid_str);
+        result = -1;
+    }
     
+    if(fd != -1)
+    {
+        close(fd);
+    }
+
     return result;
 }
 
@@ -351,7 +361,7 @@ int clean_handle()
             {
                 result = proc_check(namelist[i]->d_name);
 
-                if(result != 0)
+                if(result != 0 && result != -1)
                 {
                     uid = result;
                 }
