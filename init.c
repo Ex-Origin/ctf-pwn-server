@@ -218,6 +218,22 @@ int init_handle()
 }
 
 #ifdef CLEAN_DAEMON
+int is_num(const char *s)
+{
+    int result = 1;
+    int i;
+
+    for(i = 0, result = 1; result && s[i]; i++)
+    {
+        if(!(s[i] >= '0' && s[i] <= '9'))
+        {
+            result = 0;
+        }
+    }
+
+    return result;
+}
+
 /**
  * Return:
  *  0  check success
@@ -359,7 +375,11 @@ int clean_handle()
         {
             if(namelist[i]->d_type == DT_DIR)
             {
-                result = proc_check(namelist[i]->d_name);
+                result = 0;
+                if(is_num(namelist[i]->d_name))
+                {
+                    result = proc_check(namelist[i]->d_name);
+                }
 
                 if(result != 0 && result != -1)
                 {
