@@ -303,11 +303,6 @@ int proc_check(char *pid_str)
             result = uid;
         }
     }
-    else
-    {
-        log_printf("CLEAN : open|read|fstat error : %m (pid=%s)\n", pid_str);
-        result = -1;
-    }
     
     if(fd != -1)
     {
@@ -341,6 +336,7 @@ int clean_handle()
         else // abnormal
         {
             count ++;
+            usleep(100000);
         }
 
         // Clean all
@@ -700,9 +696,11 @@ int pwn_service()
     struct epoll_event ev, events[2];
     sigset_t mask;
     int sfd;
-    struct signalfd_siginfo fdsi;
+    struct signalfd_siginfo fdsi[0x10];
     int nfds;
-    int i;
+    int i, j;
+    // return value
+    int ret_val;
 
     CHECK(prctl(PR_SET_NAME, "pwn-service", NULL, NULL, NULL) != -1);
     CHECK((epollfd = epoll_create(2)) != -1);
@@ -764,20 +762,26 @@ int pwn_service()
         {
             if(events[i].data.fd == server_socket)
             {
-                handle_accept(server_socket, sock_fd);
+                handle_accept(server_socket, sock_fd, epollfd, sfd);
             }
             else if(events[i].data.fd == sfd)
             {
-                CHECK(read(sfd, &fdsi, sizeof(struct signalfd_siginfo)) == sizeof(struct signalfd_siginfo));
-                switch (fdsi.ssi_signo)
+                CHECK((ret_val = read(sfd, fdsi, sizeof(fdsi))) >= 0);
+                CHECK(ret_val % sizeof(struct signalfd_siginfo) == 0);
+                CHECK(ret_val <= sizeof(fdsi));
+
+                for(j = 0; j < (ret_val / sizeof(struct signalfd_siginfo)); j++)
                 {
-                case SIGCHLD:
-                    handle_accept(server_socket, sock_fd, epollfd, sfd);
-                    break;
-                
-                default:
-                    fprintf(stderr, "PWN   : Error : Unknown ssi_signo %s:%d: %m\n", __FILE__, __LINE__);
-                    break;
+                    switch (fdsi[j].ssi_signo)
+                    {
+                    case SIGCHLD:
+                        handle_service_child(fdsi[j].ssi_pid);
+                        break;
+                    
+                    default:
+                        fprintf(stderr, "PWN   : Error : Unknown ssi_signo %s:%d: %m\n", __FILE__, __LINE__);
+                        break;
+                    }
                 }
             }
             else
