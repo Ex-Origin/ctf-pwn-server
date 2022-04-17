@@ -319,7 +319,7 @@ int proc_check(char *pid_str, int *uid, int *pid)
     return result;
 }
 
-int clean_handle(int pfd)
+int clean_handle()
 {
     struct dirent **namelist;
     int n, i;
@@ -384,7 +384,7 @@ int clean_handle(int pfd)
                     switch ((result = proc_check(namelist[i]->d_name, &uid, &pid)))
                     {
                     case 1:
-                        CHECK(write(pfd, &pid, sizeof(pid)) == sizeof(pid));
+                        break;
                     case 0:
                         break;
                     case -1:
@@ -579,61 +579,55 @@ int receive_and_count(int fd, in_addr_t target)
 }
 #endif
 
-int handle_service_child(int pid)
+int handle_service_child()
 {
-    int recv_pid = 0, status = 0;
-    int result = 0;
-    
-    recv_pid = waitpid(pid, &status, WNOHANG);
-    if(recv_pid > 0)
+    int r = 0, status = 0;
+
+    for(r = 1; r != 0 && r!= -1; )
     {
-        if (WIFEXITED(status))
+        r = waitpid(-1, &status, WNOHANG);
+        if(r > 0)
         {
-            log_printf("PWN   : pid: %d    exited, status = %d\n", recv_pid, WEXITSTATUS(status));
-        }
-        else if (WIFSIGNALED(status))
-        {
-            if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
+            if (WIFEXITED(status))
             {
-                log_printf("PWN   : pid: %d    killed by signal %s\n", recv_pid, sig_name[WTERMSIG(status)]);
+                log_printf("PWN   : pid: %d    exited, status = %d\n", r, WEXITSTATUS(status));
             }
-            else
+            else if (WIFSIGNALED(status))
             {
-                log_printf("PWN   : pid: %d    killed by signal %d\n", recv_pid, WTERMSIG(status));
+                if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
+                {
+                    log_printf("PWN   : pid: %d    killed by signal %s\n", r, sig_name[WTERMSIG(status)]);
+                }
+                else
+                {
+                    log_printf("PWN   : pid: %d    killed by signal %d\n", r, WTERMSIG(status));
+                }
             }
-        }
-        else if (WIFSTOPPED(status))
-        {
-            if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
+            else if (WIFSTOPPED(status))
             {
-                log_printf("PWN   : pid: %d    stopped by signal %s\n", recv_pid, sig_name[WSTOPSIG(status)]);
+                if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
+                {
+                    log_printf("PWN   : pid: %d    stopped by signal %s\n", r, sig_name[WSTOPSIG(status)]);
+                }
+                else
+                {
+                    log_printf("PWN   : pid: %d    stopped by signal %d\n", r, WSTOPSIG(status));
+                }
             }
-            else
+            else if (WIFCONTINUED(status))
             {
-                log_printf("PWN   : pid: %d    stopped by signal %d\n", recv_pid, WSTOPSIG(status));
+                log_printf("PWN   : pid: %d    continued\n", r);
             }
-        }
-        else if (WIFCONTINUED(status))
-        {
-            log_printf("PWN   : pid: %d    continued\n", recv_pid);
         }
     }
-    else if(recv_pid == 0)
-    {
-        log_printf("PWN   : pid: %d    recv_pid == 0 : waitpid : %m\n", pid);
-    }
-    else
-    {
-        log_printf("PWN   : pid: %d    Error: waitpid : %m\n", pid);
-    }
-    
-    return result;
+
+    return 0;
 }
 
 /**
- * The fd1 & fd2 are unnecessary for the child process.
+ * The fd1 are unnecessary for the child process.
  */
-int handle_accept(int server_socket, int sock_fd, int fd1, int fd2)
+int handle_accept(int server_socket, int sock_fd, int fd1)
 {
     int struct_len;
     struct sockaddr_in client_addr;
@@ -672,7 +666,6 @@ int handle_accept(int server_socket, int sock_fd, int fd1, int fd2)
             CHECK(close(client_socket) != -1);
             CHECK(close(sock_fd) != -1);
             CHECK(close(fd1) != -1);
-            CHECK(close(fd2) != -1);
 
             CHECK(setsid() != -1);
 
@@ -708,7 +701,7 @@ int handle_accept(int server_socket, int sock_fd, int fd1, int fd2)
     return result;
 }
 
-int pwn_service(int cfd)
+int pwn_service()
 {
     struct sockaddr_in server_addr, target_addr;
     int value;
@@ -764,35 +757,21 @@ int pwn_service(int cfd)
     ev.data.fd = server_socket;
     CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socket, &ev) != -1);
 
-    // Handle SIGCHLD
-    ev.events = EPOLLIN;
-    ev.data.fd = cfd;
-    CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, cfd, &ev) != -1);
-
     for(;;)
     {
-        CHECK((nfds = epoll_wait(epollfd, events, 2, -1)) != -1);
+        CHECK((nfds = epoll_wait(epollfd, events, 2, 1000)) != -1); // 1 second
         for(i = 0; i < nfds; i++)
         {
             if(events[i].data.fd == server_socket)
             {
-                handle_accept(server_socket, sock_fd, epollfd, cfd);
-            }
-            else if(events[i].data.fd == cfd)
-            {
-                CHECK((ret_val = read(cfd, &child, sizeof(child))) >= 0);            
-                CHECK(ret_val % sizeof(*child) == 0);
-                CHECK(ret_val <= sizeof(child));
-                for(j = 0; j < (ret_val / sizeof(*child)); j++)
-                {
-                    handle_service_child(child[j]);
-                }
+                handle_accept(server_socket, sock_fd, epollfd);
             }
             else
             {
                 fprintf(stderr, "PWN   : Error : Unknown fd %s:%d: %m\n", __FILE__, __LINE__);
             }
         }
+        handle_service_child();
     }
 
     return 0;
@@ -811,14 +790,12 @@ int log_to_file()
 int main(int argc, char **argv, char **envp)
 {
     int pid;
-    int pipe_fd[2];
 
 #ifndef DEBUG
     log_to_file();
 #endif
     setlinebuf(stdout);
     setlinebuf(stderr);
-    CHECK(pipe(pipe_fd) != -1);
 
 #ifndef DEBUG
 #ifdef CLEAN_DAEMON
@@ -827,10 +804,9 @@ int main(int argc, char **argv, char **envp)
     CHECK((pid = fork()) != -1);
     if(pid == 0)
     {
-        CHECK(close(pipe_fd[0]) != -1);
         CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
         log_printf("CLEAN : clean_handle start with pid %d\n", getpid());
-        clean_handle(pipe_fd[1]);
+        clean_handle();
         log_printf("CLEAN : clean_handle end\n");
         exit(EXIT_SUCCESS);
     }
@@ -844,10 +820,9 @@ int main(int argc, char **argv, char **envp)
     if(pid == 0)
 #endif 
     {
-        CHECK(close(pipe_fd[1]) != -1);
         CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
         log_printf("PWN   : pwn_service start with pid %d\n", getpid());
-        pwn_service(pipe_fd[0]);
+        pwn_service();
         log_printf("PWN   : pwn_service end\n");
         exit(EXIT_SUCCESS);
     }
