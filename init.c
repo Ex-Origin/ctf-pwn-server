@@ -236,19 +236,20 @@ int is_num(const char *s)
 
 /**
  * Return:
+ *  1 zombie process
  *  0  check success
  *  -1 check failed
- *  or return uid
  */
-int proc_check(char *pid_str)
+int proc_check(char *pid_str, int *uid, int *pid)
 {
     char path[0x100];
     char status_buf[0x1000];
     int result = 0;
     int fd = -1;
-    int uid = 0, pid = 0, ppid = 0;
+    int ppid = 0;
     char *tmp;
     struct stat sb;
+    int is_zombie = 0;
 
     memset(path, 0, sizeof(path));
     strncpy(path, "/proc/", sizeof(path) - 1);
@@ -263,7 +264,7 @@ int proc_check(char *pid_str)
     {
         if((tmp = strstr(status_buf, "Pid:")) != NULL)
         {
-            pid = atoi(tmp + 4);
+            *pid = atoi(tmp + 4);
         }
         else
         {
@@ -281,26 +282,32 @@ int proc_check(char *pid_str)
 
         if((tmp = strstr(status_buf, "Uid:")) != NULL)
         {
-            uid = atoi(tmp + 4);
+            *uid = atoi(tmp + 4);
         }
         else
         {
             log_printf("CLEAN : Not found 'Uid:' in '%s'\n", path);
         }
 
-        /* uid != 0 means the process is not root, and ppid == 1 means the process is daemon. */
-        if(uid != 0 && ppid == 1)
+        if((tmp = strstr(status_buf, "State:	Z (zombie)")) != NULL)
         {
-            kill(pid, SIGKILL);
-            log_printf("CLEAN : Killed daemon process (uid=%d, pid=%d)\n", uid, pid);
-            result = uid;
+            is_zombie = 1;
+            result = 1;
         }
 
-        if(uid != 0 && (time(NULL) - sb.st_ctime) > TIMEOUT)
+        /* uid != 0 means the process is not root, and ppid == 1 means the process is daemon. */
+        if(is_zombie == 0 && *uid != 0 && ppid == 1)
         {
-            kill(pid, SIGKILL);
-            log_printf("CLEAN : Killed timeout process (uid=%d, pid=%d)\n", uid, pid);
-            result = uid;
+            kill(*pid, SIGKILL);
+            log_printf("CLEAN : Killed daemon process (uid=%d, pid=%d)\n", *uid, *pid);
+            result = -1;
+        }
+
+        if(is_zombie == 0 && *uid != 0 && (time(NULL) - sb.st_ctime) > TIMEOUT)
+        {
+            kill(*pid, SIGKILL);
+            log_printf("CLEAN : Killed timeout process (uid=%d, pid=%d)\n", *uid, *pid);
+            result = -1;
         }
     }
     
@@ -312,7 +319,7 @@ int proc_check(char *pid_str)
     return result;
 }
 
-int clean_handle()
+int clean_handle(int pfd)
 {
     struct dirent **namelist;
     int n, i;
@@ -325,9 +332,9 @@ int clean_handle()
     CHECK(prctl(PR_SET_NAME, "clean-handle", NULL, NULL, NULL) != -1);
     signal(SIGCHLD, SIG_IGN);
 
-    for(count = 0, uid = 0;;)
+    for(count = 0, uid = 0, result = 0;;)
     {
-        if(uid == 0) // normal
+        if(result != -1) // normal
         {
             count = 0;
             // Wait
@@ -374,12 +381,17 @@ int clean_handle()
                 result = 0;
                 if(is_num(namelist[i]->d_name))
                 {
-                    result = proc_check(namelist[i]->d_name);
-                }
-
-                if(result != 0 && result != -1)
-                {
-                    uid = result;
+                    switch ((result = proc_check(namelist[i]->d_name, &uid, &pid)))
+                    {
+                    case 1:
+                        CHECK(write(pfd, &pid, sizeof(pid)) == sizeof(pid));
+                    case 0:
+                        break;
+                    case -1:
+                        break;
+                    default:
+                        break;
+                    }
                 }
             }
 
@@ -573,37 +585,44 @@ int handle_service_child(int pid)
     int result = 0;
     
     recv_pid = waitpid(pid, &status, 0);
-    if (WIFEXITED(status))
+    if(recv_pid != -1)
     {
-        log_printf("PWN   : pid: %d    exited, status = %d\n", recv_pid, WEXITSTATUS(status));
+        if (WIFEXITED(status))
+        {
+            log_printf("PWN   : pid: %d    exited, status = %d\n", recv_pid, WEXITSTATUS(status));
+        }
+        else if (WIFSIGNALED(status))
+        {
+            if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
+            {
+                log_printf("PWN   : pid: %d    killed by signal %s\n", recv_pid, sig_name[WTERMSIG(status)]);
+            }
+            else
+            {
+                log_printf("PWN   : pid: %d    killed by signal %d\n", recv_pid, WTERMSIG(status));
+            }
+        }
+        else if (WIFSTOPPED(status))
+        {
+            if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
+            {
+                log_printf("PWN   : pid: %d    stopped by signal %s\n", recv_pid, sig_name[WSTOPSIG(status)]);
+            }
+            else
+            {
+                log_printf("PWN   : pid: %d    stopped by signal %d\n", recv_pid, WSTOPSIG(status));
+            }
+        }
+        else if (WIFCONTINUED(status))
+        {
+            log_printf("PWN   : pid: %d    continued\n", recv_pid);
+        }
     }
-    else if (WIFSIGNALED(status))
+    else
     {
-        if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
-        {
-            log_printf("PWN   : pid: %d    killed by signal %s\n", recv_pid, sig_name[WTERMSIG(status)]);
-        }
-        else
-        {
-            log_printf("PWN   : pid: %d    killed by signal %d\n", recv_pid, WTERMSIG(status));
-        }
+        log_printf("PWN   : pid: %d    Error: waitpid : %m\n", pid);
     }
-    else if (WIFSTOPPED(status))
-    {
-        if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
-        {
-            log_printf("PWN   : pid: %d    stopped by signal %s\n", recv_pid, sig_name[WSTOPSIG(status)]);
-        }
-        else
-        {
-            log_printf("PWN   : pid: %d    stopped by signal %d\n", recv_pid, WSTOPSIG(status));
-        }
-    }
-    else if (WIFCONTINUED(status))
-    {
-        log_printf("PWN   : pid: %d    continued\n", recv_pid);
-    }
-
+    
     return result;
 }
 
@@ -685,7 +704,7 @@ int handle_accept(int server_socket, int sock_fd, int fd1, int fd2)
     return result;
 }
 
-int pwn_service()
+int pwn_service(int cfd)
 {
     struct sockaddr_in server_addr, target_addr;
     int value;
@@ -694,13 +713,12 @@ int pwn_service()
     struct sockaddr_nl src_addr;
     int epollfd;
     struct epoll_event ev, events[2];
-    sigset_t mask;
-    int sfd;
-    struct signalfd_siginfo fdsi[0x10];
+    int child[0x100];
     int nfds;
     int i, j;
     // return value
     int ret_val;
+    size_t zombie;
 
     CHECK(prctl(PR_SET_NAME, "pwn-service", NULL, NULL, NULL) != -1);
     CHECK((epollfd = epoll_create(2)) != -1);
@@ -743,17 +761,9 @@ int pwn_service()
     CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socket, &ev) != -1);
 
     // Handle SIGCHLD
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGCHLD);
-
-    /* Block signals so that they aren't handled
-    according to their default dispositions */
-    CHECK(sigprocmask(SIG_BLOCK, &mask, NULL) != -1);
-    CHECK((sfd = signalfd(-1, &mask, 0)) != -1);
-
     ev.events = EPOLLIN;
-    ev.data.fd = sfd;
-    CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, sfd, &ev) != -1);
+    ev.data.fd = cfd;
+    CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, cfd, &ev) != -1);
 
     for(;;)
     {
@@ -762,26 +772,16 @@ int pwn_service()
         {
             if(events[i].data.fd == server_socket)
             {
-                handle_accept(server_socket, sock_fd, epollfd, sfd);
+                handle_accept(server_socket, sock_fd, epollfd, cfd);
             }
-            else if(events[i].data.fd == sfd)
+            else if(events[i].data.fd == cfd)
             {
-                CHECK((ret_val = read(sfd, fdsi, sizeof(fdsi))) >= 0);
-                CHECK(ret_val % sizeof(struct signalfd_siginfo) == 0);
-                CHECK(ret_val <= sizeof(fdsi));
-
-                for(j = 0; j < (ret_val / sizeof(struct signalfd_siginfo)); j++)
+                CHECK((ret_val = read(cfd, &child, sizeof(child))) >= 0);            
+                CHECK(ret_val % sizeof(*child) == 0);
+                CHECK(ret_val <= sizeof(child));
+                for(j = 0; j < (ret_val / sizeof(*child)); j++)
                 {
-                    switch (fdsi[j].ssi_signo)
-                    {
-                    case SIGCHLD:
-                        handle_service_child(fdsi[j].ssi_pid);
-                        break;
-                    
-                    default:
-                        fprintf(stderr, "PWN   : Error : Unknown ssi_signo %s:%d: %m\n", __FILE__, __LINE__);
-                        break;
-                    }
+                    handle_service_child(child[j]);
                 }
             }
             else
@@ -807,12 +807,14 @@ int log_to_file()
 int main(int argc, char **argv, char **envp)
 {
     int pid;
+    int pipe_fd[2];
 
 #ifndef DEBUG
     log_to_file();
 #endif
     setlinebuf(stdout);
     setlinebuf(stderr);
+    CHECK(pipe(pipe_fd) != -1);
 
 #ifndef DEBUG
 #ifdef CLEAN_DAEMON
@@ -821,9 +823,10 @@ int main(int argc, char **argv, char **envp)
     CHECK((pid = fork()) != -1);
     if(pid == 0)
     {
+        CHECK(close(pipe_fd[0]) != -1);
         CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
         log_printf("CLEAN : clean_handle start with pid %d\n", getpid());
-        clean_handle();
+        clean_handle(pipe_fd[1]);
         log_printf("CLEAN : clean_handle end\n");
         exit(EXIT_SUCCESS);
     }
@@ -837,9 +840,10 @@ int main(int argc, char **argv, char **envp)
     if(pid == 0)
 #endif 
     {
+        CHECK(close(pipe_fd[1]) != -1);
         CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
         log_printf("PWN   : pwn_service start with pid %d\n", getpid());
-        pwn_service();
+        pwn_service(pipe_fd[0]);
         log_printf("PWN   : pwn_service end\n");
         exit(EXIT_SUCCESS);
     }
