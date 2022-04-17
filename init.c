@@ -584,8 +584,8 @@ int handle_service_child(int pid)
     int recv_pid = 0, status = 0;
     int result = 0;
     
-    recv_pid = waitpid(pid, &status, 0);
-    if(recv_pid != -1)
+    recv_pid = waitpid(pid, &status, WNOHANG);
+    if(recv_pid > 0)
     {
         if (WIFEXITED(status))
         {
@@ -617,6 +617,10 @@ int handle_service_child(int pid)
         {
             log_printf("PWN   : pid: %d    continued\n", recv_pid);
         }
+    }
+    else if(recv_pid == 0)
+    {
+        log_printf("PWN   : pid: %d    recv_pid == 0 : waitpid : %m\n", pid);
     }
     else
     {
