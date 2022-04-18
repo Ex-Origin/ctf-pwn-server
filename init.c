@@ -710,12 +710,9 @@ int pwn_service()
     struct sockaddr_nl src_addr;
     int epollfd;
     struct epoll_event ev, events[2];
-    int child[0x100];
     int nfds;
     int i, j;
-    // return value
-    int ret_val;
-    size_t zombie;
+
 
     CHECK(prctl(PR_SET_NAME, "pwn-service", NULL, NULL, NULL) != -1);
     CHECK((epollfd = epoll_create(2)) != -1);
