@@ -323,7 +323,7 @@ int clean_handle()
 {
     struct dirent **namelist;
     int n, i;
-    int uid, result;
+    int uid, result, abnormal;
     // Number of consecutive abnormal times
     size_t count;
     int pid;
@@ -332,9 +332,9 @@ int clean_handle()
     CHECK(prctl(PR_SET_NAME, "clean-handle", NULL, NULL, NULL) != -1);
     signal(SIGCHLD, SIG_IGN);
 
-    for(count = 0, uid = 0, result = 0;;)
+    for(count = 0, uid = 0, abnormal = 0;;)
     {
-        if(result != -1) // normal
+        if(abnormal == 0) // normal
         {
             count = 0;
             // Wait
@@ -343,7 +343,7 @@ int clean_handle()
         else // abnormal
         {
             count ++;
-            usleep(100000);
+            usleep(100000); // 0.1 second
         }
 
         // Clean all
@@ -372,6 +372,7 @@ int clean_handle()
 
 
         uid = 0;
+        abnormal = 0;
         CHECK((n = scandir("/proc", &namelist, NULL, alphasort)) != -1);
 
         for(i = 0; i < n; i++)
@@ -388,6 +389,7 @@ int clean_handle()
                     case 0:
                         break;
                     case -1:
+                        abnormal = 1;
                         break;
                     default:
                         break;
