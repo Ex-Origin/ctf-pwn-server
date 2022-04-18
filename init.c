@@ -629,7 +629,7 @@ int handle_service_child()
  */
 int handle_accept(int server_socket, int sock_fd, int fd1)
 {
-    int struct_len;
+    socklen_t struct_len;
     struct sockaddr_in client_addr;
     struct timeval timeout; 
     int client_socket;
