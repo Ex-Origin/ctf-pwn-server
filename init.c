@@ -685,7 +685,10 @@ int handle_accept(int server_socket, int sock_fd, int fd1)
         else
         {
             log_printf("PWN   : receive %s:%d, fork error : Resource temporarily unavailable\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
-            CHECK(write(client_socket, "Resource temporarily unavailable\n", 33) != -1);
+            if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
+            {
+                log_printf("PWN   : write error : %m\n");
+            }
             result = -1;
         }
     }
@@ -693,12 +696,15 @@ int handle_accept(int server_socket, int sock_fd, int fd1)
     else
     {
         log_printf("PWN   : ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
-        CHECK(write(client_socket, "Blocked by pwn-service\n", 23) != -1);
+        if(write(client_socket, "Blocked by pwn-service\n", 23) == -1)
+        {
+            log_printf("PWN   : write error : %m\n");
+        }
         result = -1;
     }
 #endif   
 
-    close(client_socket);
+    CHECK(close(client_socket) != -1);
 
     return result;
 }
