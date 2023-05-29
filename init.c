@@ -39,7 +39,7 @@
 #define PORT 10000
 #define TIMEOUT 600
 #define UID 2301
-// #define TIME_OFFSET 28800
+// #define TIME_OFFSET 28800 // +8 hours
 
 // The limitation of resource
 #define MAX_CPU_TIMEOUT 600
