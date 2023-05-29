@@ -407,10 +407,60 @@ int clean_handle()
 }
 #endif
 
+int sandbox()
+{
+    int i, j, enable, existed;
+    int enable_capabilities[] = {
+        // CAP_CHOWN,
+        // CAP_DAC_OVERRIDE,
+        // CAP_FSETID,
+        // CAP_FOWNER,
+        // CAP_MKNOD,
+        // CAP_NET_RAW,
+        // CAP_SETGID,
+        // CAP_SETUID,
+        // CAP_SETFCAP,
+        // CAP_SETPCAP,
+        // CAP_NET_BIND_SERVICE,
+        // CAP_SYS_CHROOT,
+        // CAP_KILL,
+        // CAP_AUDIT_WRITE,
+    };
+
+    i = 0;
+    enable = 0;
+    while(enable != -1)
+    {
+        enable = prctl(PR_CAPBSET_READ, i, 0, 0, 0);
+        existed = 0;
+        for(j = 0; j < (sizeof(enable_capabilities)/sizeof(enable_capabilities[0])); j++)
+        {
+            if(i == enable_capabilities[j])
+            {
+                existed = 1;
+                break;
+            }
+        }
+
+        if(existed == 0 && enable == 1)
+        {
+            if(prctl(PR_CAPBSET_DROP, i, 0, 0, 0) == -1)
+            {
+                perror("prctl:PR_CAPBSET_DROP");
+            }
+        }
+
+        i++;
+    }
+    return 0;
+}
+
 int start_service()
 {
     char *child_args[] = {"/bin/bash", NULL};
     struct rlimit limit;
+
+    sandbox();
 
     CHECK(setgid(2301) != -1);
     CHECK(setuid(2301) != -1);
