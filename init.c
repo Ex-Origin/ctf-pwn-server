@@ -33,13 +33,25 @@
 #include <sys/signalfd.h>
 
 #define INIT_LOG "/var/log/init.log"
+// #define CHROOT_PATH "/home/ctf"
 // the maximum instances of this service per source IP address
 #define PER_SOURCE 10
 #define PORT 10000
-#define TIMEOUT 600
+#define TIMEOUT 6
+#define UID 2301
 
-#define CLEAN_DAEMON
+// The limitation of resource
+#define MAX_CPU_TIMEOUT 600
+#define MAX_PROCESS 256
+#define MAX_MEMORY 0x40000000; // 1024M
+
 #define LIMIT_IP
+
+int start_service()
+{
+    char *child_args[] = {"/bin/bash", NULL};
+    return execv(child_args[0], child_args);
+}
 
 // Show more information
 #ifdef DEBUG
@@ -47,6 +59,13 @@
 #else
 #define DPRINTF(...)
 #endif
+
+int signal_fd = -1;
+int epoll_fd = -1;
+int network_socket = -1;
+int server_socket = -1;
+sigset_t old_mask;
+int amount = 0;
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -101,45 +120,6 @@ int log_printf( const char *format, ...)
     return result;
 }
 
-/* Handle stop signal (Ctrl-C, etc). */
-void handle_stop_sig(int sig) 
-{
-    log_printf("Received a STOP signal then exit\n");
-    exit(EXIT_SUCCESS);
-}
-
-/* Handle timeout (SIGALRM). */
-
-void handle_timeout(int sig) 
-{
-    log_printf("Received a timeout signal then exit\n");
-    exit(EXIT_SUCCESS);
-}
-
-/* Handle skip request (SIGUSR1). */
-void handle_skipreq(int sig) 
-{
-    log_printf("Received a SIGUSR1 signal\n");
-}
-
-void setup_signal_handlers(void) 
-{
-  /* Various ways of saying "stop". */
-  signal(SIGHUP, handle_stop_sig);
-  signal(SIGINT, handle_stop_sig);
-  signal(SIGTERM, handle_stop_sig);
-
-  /* Exec timeout notifications. */
-  signal(SIGALRM, handle_timeout);
-
-  /* SIGUSR1: skip entry */
-  signal(SIGUSR1, handle_skipreq);
-
-  /* Things we don't care about. */
-  signal(SIGTSTP, SIG_IGN);
-  signal(SIGPIPE, SIG_IGN);
-}
-
 char *sig_name[] = {
     NULL,
     "SIGHUP",
@@ -176,48 +156,6 @@ char *sig_name[] = {
     "__SIGRTMIN"
 };
 
-int init_handle()
-{
-    int pid, status;
-
-    for(pid = wait(&status); pid != -1; pid = wait(&status))
-    {
-        if (WIFEXITED(status))
-        {
-            log_printf("INIT  : pid: %d    exited, status = %d\n", pid, WEXITSTATUS(status));
-        }
-        else if (WIFSIGNALED(status))
-        {
-            if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
-            {
-                log_printf("INIT  : pid: %d    killed by signal %s\n", pid, sig_name[WTERMSIG(status)]);
-            }
-            else
-            {
-                log_printf("INIT  : pid: %d    killed by signal %d\n", pid, WTERMSIG(status));
-            }
-        }
-        else if (WIFSTOPPED(status))
-        {
-            if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
-            {
-                log_printf("INIT  : pid: %d    stopped by signal %s\n", pid, sig_name[WSTOPSIG(status)]);
-            }
-            else
-            {
-                log_printf("INIT  : pid: %d    stopped by signal %d\n", pid, WSTOPSIG(status));
-            }
-        }
-        else if (WIFCONTINUED(status))
-        {
-            log_printf("INIT  : pid: %d    continued\n", pid);
-        }
-    }
-
-    return 0;
-}
-
-#ifdef CLEAN_DAEMON
 int is_num(const char *s)
 {
     int result = 1;
@@ -234,178 +172,48 @@ int is_num(const char *s)
     return result;
 }
 
-/**
- * Return:
- *  1 zombie process
- *  0  check success
- *  -1 check failed
- */
-int proc_check(char *pid_str, int *uid, int *pid)
+int proc_check(int pid)
 {
     char path[0x100];
-    char status_buf[0x1000];
-    int result = 0;
-    int fd = -1;
-    int ppid = 0;
-    char *tmp;
     struct stat sb;
-    int is_zombie = 0;
 
     memset(path, 0, sizeof(path));
-    strncpy(path, "/proc/", sizeof(path) - 1);
-    strncat(path, pid_str, sizeof(path) - 1);
-    strncat(path, "/status", sizeof(path) - 1);
+    snprintf(path, sizeof(path)-1, "/proc/%d/status", pid);
 
-    memset(status_buf, 0, sizeof(status_buf));
     memset(&sb, 0, sizeof(struct stat));
-    if((fd  = open(path, O_RDONLY)) != -1 && 
-        read(fd, status_buf, sizeof(status_buf)) != -1 &&
-        fstat(fd, &sb) != -1)
+    if(stat(path, &sb) != -1)
     {
-        if((tmp = strstr(status_buf, "Pid:")) != NULL)
+        if(sb.st_uid == UID && (time(NULL) - sb.st_ctime) > TIMEOUT)
         {
-            *pid = atoi(tmp + 4);
+            kill(pid, SIGKILL);
+            log_printf("Killed timeout process (pid=%d)\n", pid);
         }
-        else
-        {
-            log_printf("CLEAN : Not found 'Pid:' in '%s'\n", path);
-        }
-
-        if((tmp = strstr(status_buf, "PPid:")) != NULL)
-        {
-            ppid = atoi(tmp + 5);
-        }
-        else
-        {
-            log_printf("CLEAN : Not found 'PPid:' in '%s'\n", path);
-        }
-
-        if((tmp = strstr(status_buf, "Uid:")) != NULL)
-        {
-            *uid = atoi(tmp + 4);
-        }
-        else
-        {
-            log_printf("CLEAN : Not found 'Uid:' in '%s'\n", path);
-        }
-
-        if((tmp = strstr(status_buf, "State:	Z (zombie)")) != NULL)
-        {
-            is_zombie = 1;
-            result = 1;
-        }
-
-        /* uid != 0 means the process is not root, and ppid == 1 means the process is daemon. */
-        if(is_zombie == 0 && *uid != 0 && ppid == 1)
-        {
-            kill(*pid, SIGKILL);
-            log_printf("CLEAN : Killed daemon process (uid=%d, pid=%d)\n", *uid, *pid);
-            result = -1;
-        }
-
-        if(is_zombie == 0 && *uid != 0 && (time(NULL) - sb.st_ctime) > TIMEOUT)
-        {
-            kill(*pid, SIGKILL);
-            log_printf("CLEAN : Killed timeout process (uid=%d, pid=%d)\n", *uid, *pid);
-            result = -1;
-        }
-    }
-    
-    if(fd != -1)
-    {
-        close(fd);
-    }
-
-    return result;
-}
-
-int clean_handle()
-{
-    struct dirent **namelist;
-    int n, i;
-    int uid, result, abnormal;
-    // Number of consecutive abnormal times
-    size_t count;
-    int pid;
-
-    CHECK(getuid() == 0);
-    CHECK(prctl(PR_SET_NAME, "clean-handle", NULL, NULL, NULL) != -1);
-    signal(SIGCHLD, SIG_IGN);
-
-    for(count = 0, uid = 0, abnormal = 0;;)
-    {
-        if(abnormal == 0) // normal
-        {
-            count = 0;
-            // Wait
-            sleep(1);
-        }
-        else // abnormal
-        {
-            count ++;
-            usleep(100000); // 0.1 second
-        }
-
-        // Clean all
-        if(uid != 0 && count > 16)
-        {
-            log_printf("CLEAN : Clean all (count=%u, uid=%d)\n", count, uid);
-            pid = fork();
-            if(pid != -1)
-            {
-                CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
-
-                if(pid == 0 && setuid(uid) == 0) // Child
-                {
-                    kill(-1, SIGKILL);
-                    exit(EXIT_SUCCESS);
-                }
-            }
-            else
-            {
-                log_printf("CLEAN : fork error : %m : when clean all\n");
-            }
-
-            // clear
-            count = 0;
-        }
-
-
-        uid = 0;
-        abnormal = 0;
-        CHECK((n = scandir("/proc", &namelist, NULL, alphasort)) != -1);
-
-        for(i = 0; i < n; i++)
-        {
-            if(namelist[i]->d_type == DT_DIR)
-            {
-                result = 0;
-                if(is_num(namelist[i]->d_name))
-                {
-                    switch ((result = proc_check(namelist[i]->d_name, &uid, &pid)))
-                    {
-                    case 1:
-                        break;
-                    case 0:
-                        break;
-                    case -1:
-                        abnormal = 1;
-                        break;
-                    default:
-                        break;
-                    }
-                }
-            }
-
-            free(namelist[i]);
-        }
-
-        free(namelist);
     }
 
     return 0;
 }
-#endif
+
+int clean_process()
+{
+    struct dirent **namelist;
+    int n, i;
+
+    CHECK((n = scandir("/proc", &namelist, NULL, alphasort)) != -1);
+
+    for(i = 0; i < n; i++)
+    {
+        if(namelist[i]->d_type == DT_DIR)
+        {
+            proc_check(atoi(namelist[i]->d_name));
+        }
+
+        free(namelist[i]);
+    }
+
+    free(namelist);
+
+    return 0;
+}
 
 int sandbox()
 {
@@ -446,38 +254,13 @@ int sandbox()
         {
             if(prctl(PR_CAPBSET_DROP, i, 0, 0, 0) == -1)
             {
-                perror("prctl:PR_CAPBSET_DROP");
+                fprintf(stderr, "ERROR : prctl:PR_CAPBSET_DROP %s:%d: %m\n", __FILE__, __LINE__);
             }
         }
 
         i++;
     }
     return 0;
-}
-
-int start_service()
-{
-    char *child_args[] = {"/bin/bash", NULL};
-    struct rlimit limit;
-
-    sandbox();
-
-    CHECK(setgid(2301) != -1);
-    CHECK(setuid(2301) != -1);
-
-    limit.rlim_cur = TIMEOUT;
-    limit.rlim_max = TIMEOUT;
-    CHECK(setrlimit(RLIMIT_CPU, &limit) != -1);
-
-    limit.rlim_cur = 256;
-    limit.rlim_max = 256;
-    CHECK(setrlimit(RLIMIT_NPROC, &limit) != -1);
-
-    limit.rlim_cur = 0x40000000; // 1024M
-    limit.rlim_max = 0x40000000;
-    CHECK(setrlimit(RLIMIT_AS, &limit) != -1);
-
-    return execv(child_args[0], child_args);
 }
 
 #ifdef LIMIT_IP
@@ -518,7 +301,7 @@ int send_query(int fd)
             if (errno == EINTR)
                 continue;
 
-            log_printf("PWN   : sendmsg error : %m\n");
+            log_printf("Sendmsg error : %m\n");
             return -1;
         }
 
@@ -533,11 +316,11 @@ int compare_diag(const struct inet_diag_msg *diag, unsigned int len, in_addr_t t
     int port;
 
     if (len < NLMSG_LENGTH(sizeof(*diag))) {
-        log_printf("PWN   : short response\n");
+        log_printf("Short response\n");
         return 0;
     }
     if (diag->idiag_family != AF_INET) {
-        log_printf("PWN   : unexpected family %u\n", diag->idiag_family);
+        log_printf("Unexpected family %u\n", diag->idiag_family);
         return 0;
     }
 
@@ -583,21 +366,21 @@ int receive_and_count(int fd, in_addr_t target)
             if (errno == EINTR)
                 continue;
 
-            log_printf("PWN   : sendmsg error : %m\n");
+            log_printf("Sendmsg error : %m\n");
             return -1;
         }
         if (ret == 0)
             return result;
 
         if (nladdr.nl_family != AF_NETLINK) {
-            log_printf("PWN   : !AF_NETLINK\n");
+            log_printf("!AF_NETLINK\n");
             return -1;
         }
 
         h = (struct nlmsghdr *) buf;
 
         if (!NLMSG_OK(h, ret)) {
-            log_printf("PWN   : !NLMSG_OK\n");
+            log_printf("!NLMSG_OK\n");
             return -1;
         }
 
@@ -609,17 +392,17 @@ int receive_and_count(int fd, in_addr_t target)
                 err = NLMSG_DATA(h);
 
                 if (h->nlmsg_len < NLMSG_LENGTH(sizeof(*err))) {
-                    log_printf("PWN   : NLMSG_ERROR\n");
+                    log_printf("NLMSG_ERROR\n");
                 } else {
                     errno = -err->error;
-                    log_printf("PWN   : NLMSG_ERROR\n");
+                    log_printf("NLMSG_ERROR\n");
                 }
 
                 return -1;
             }
 
             if (h->nlmsg_type != SOCK_DIAG_BY_FAMILY) {
-                log_printf("PWN   : unexpected nlmsg_type %u\n", (unsigned) h->nlmsg_type);
+                log_printf("Unexpected nlmsg_type %u\n", (unsigned) h->nlmsg_type);
                 return -1;
             }
 
@@ -642,33 +425,35 @@ int handle_service_child()
         {
             if (WIFEXITED(status))
             {
-                log_printf("PWN   : pid: %d    exited, status = %d\n", r, WEXITSTATUS(status));
+                log_printf("Pid: %d    exited, status = %d\n", r, WEXITSTATUS(status));
+                amount--;
             }
             else if (WIFSIGNALED(status))
             {
                 if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
                 {
-                    log_printf("PWN   : pid: %d    killed by signal %s\n", r, sig_name[WTERMSIG(status)]);
+                    log_printf("Pid: %d    killed by signal %s\n", r, sig_name[WTERMSIG(status)]);
                 }
                 else
                 {
-                    log_printf("PWN   : pid: %d    killed by signal %d\n", r, WTERMSIG(status));
+                    log_printf("Pid: %d    killed by signal %d\n", r, WTERMSIG(status));
                 }
+                amount--;
             }
             else if (WIFSTOPPED(status))
             {
                 if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
                 {
-                    log_printf("PWN   : pid: %d    stopped by signal %s\n", r, sig_name[WSTOPSIG(status)]);
+                    log_printf("Pid: %d    stopped by signal %s\n", r, sig_name[WSTOPSIG(status)]);
                 }
                 else
                 {
-                    log_printf("PWN   : pid: %d    stopped by signal %d\n", r, WSTOPSIG(status));
+                    log_printf("Pid: %d    stopped by signal %d\n", r, WSTOPSIG(status));
                 }
             }
             else if (WIFCONTINUED(status))
             {
-                log_printf("PWN   : pid: %d    continued\n", r);
+                log_printf("Pid: %d    continued\n", r);
             }
         }
     }
@@ -676,121 +461,38 @@ int handle_service_child()
     return 0;
 }
 
-/**
- * The fd1 are unnecessary for the child process.
- */
-int handle_accept(int server_socket, int sock_fd, int fd1)
+int log_to_file()
 {
-    socklen_t struct_len;
-    struct sockaddr_in client_addr;
-    struct timeval timeout; 
-    int client_socket;
-    int existed_num;
-    int pid;
-    int result = 0;
-
-    struct_len = sizeof(struct sockaddr_in);
-    memset(&client_addr, 0, sizeof(client_addr));
-    client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &struct_len);
-
-#ifdef LIMIT_IP
-    send_query(sock_fd);
-    existed_num = receive_and_count(sock_fd, client_addr.sin_addr.s_addr);
-
-    if(existed_num <= PER_SOURCE)
-#endif
-    {
-        timeout.tv_sec = TIMEOUT;
-        timeout.tv_usec = 0;
-        CHECK(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != -1);
-        CHECK(setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
-
-        pid = fork();
-        if(pid == 0)
-        {
-            CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
-
-            CHECK(dup2(client_socket, STDIN_FILENO) != -1);
-            CHECK(dup2(client_socket, STDOUT_FILENO) != -1);
-            CHECK(dup2(client_socket, STDERR_FILENO) != -1);
-
-            CHECK(close(server_socket) != -1);
-            CHECK(close(client_socket) != -1);
-            CHECK(close(sock_fd) != -1);
-            CHECK(close(fd1) != -1);
-
-            CHECK(setsid() != -1);
-
-            start_service();
-
-            for(;;)
-                exit(EXIT_SUCCESS);
-        }
-
-        if(pid != -1)
-        {
-            log_printf("PWN   : receive %s:%d with pid %d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, pid);
-            result = 0;
-        }
-        else
-        {
-            log_printf("PWN   : receive %s:%d, fork error : Resource temporarily unavailable\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
-            if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
-            {
-                log_printf("PWN   : write error : %m\n");
-            }
-            result = -1;
-        }
-    }
-#ifdef LIMIT_IP
-    else
-    {
-        log_printf("PWN   : ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
-        if(write(client_socket, "Blocked by pwn-service\n", 23) == -1)
-        {
-            log_printf("PWN   : write error : %m\n");
-        }
-        result = -1;
-    }
-#endif   
-
-    CHECK(close(client_socket) != -1);
-
-    return result;
+    int fd;
+    fd = open(INIT_LOG, O_WRONLY|O_CREAT|O_TRUNC, 0600);
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    close(fd);
+    return 0;
 }
 
-int pwn_service()
+int init_socket()
 {
-    struct sockaddr_in server_addr, target_addr;
     int value;
-    int server_socket;
-    int sock_fd;
     struct sockaddr_nl src_addr;
-    int epollfd;
-    struct epoll_event ev, events[2];
-    int nfds;
-    int i, j;
+    struct sockaddr_in server_addr;
 
-
-    CHECK(prctl(PR_SET_NAME, "pwn-service", NULL, NULL, NULL) != -1);
-    CHECK((epollfd = epoll_create(2)) != -1);
-
-#ifdef LIMIT_IP
+    #ifdef LIMIT_IP
     // https://man7.org/linux/man-pages/man7/sock_diag.7.html
-    CHECK((sock_fd = socket(AF_NETLINK, SOCK_RAW|SOCK_CLOEXEC, NETLINK_SOCK_DIAG)) != -1);
+    CHECK((network_socket = socket(AF_NETLINK, SOCK_RAW|SOCK_CLOEXEC, NETLINK_SOCK_DIAG)) != -1);
     value = 32768;
-    CHECK(setsockopt(sock_fd, SOL_SOCKET, SO_SNDBUF, &value, sizeof(value)) != -1);
+    CHECK(setsockopt(network_socket, SOL_SOCKET, SO_SNDBUF, &value, sizeof(value)) != -1);
     value = 1048576;
-    CHECK(setsockopt(sock_fd, SOL_SOCKET, SO_RCVBUF, &value, sizeof(value)) != -1);
+    CHECK(setsockopt(network_socket, SOL_SOCKET, SO_RCVBUF, &value, sizeof(value)) != -1);
     value = 1;
-    CHECK(setsockopt(sock_fd, SOL_NETLINK, NETLINK_EXT_ACK, &value, sizeof(value)) != -1);
+    CHECK(setsockopt(network_socket, SOL_NETLINK, NETLINK_EXT_ACK, &value, sizeof(value)) != -1);
 
     memset(&src_addr, 0, sizeof(src_addr));
     src_addr.nl_family = AF_NETLINK;
     src_addr.nl_pid = 0;  /* all */  
     src_addr.nl_groups = 0;
 
-    CHECK(bind(sock_fd, (struct sockaddr*)&src_addr, sizeof(src_addr)) != -1);
+    CHECK(bind(network_socket, (struct sockaddr*)&src_addr, sizeof(src_addr)) != -1);
 #endif
 
     CHECK((server_socket = socket(AF_INET, SOCK_STREAM, 0)) != -1);
@@ -806,45 +508,221 @@ int pwn_service()
 
     CHECK(bind(server_socket, (struct sockaddr *)&server_addr, sizeof(struct sockaddr_in)) != -1);
 
-    listen(server_socket, 10);
+    CHECK(listen(server_socket, 16) != -1);
 
-    ev.events = EPOLLIN;
-    ev.data.fd = server_socket;
-    CHECK(epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socket, &ev) != -1);
+    return 0;
+}
 
-    for(;;)
+int set_sig_hander()
+{
+    sigset_t new_mask;
+
+    sigemptyset(&new_mask);
+    sigaddset(&new_mask, SIGINT);
+    sigaddset(&new_mask, SIGTERM);
+    sigaddset(&new_mask, SIGQUIT);
+    sigaddset(&new_mask, SIGCHLD);
+
+    if (sigprocmask(SIG_BLOCK, &new_mask, &old_mask) == -1 || (signal_fd = signalfd(-1, &new_mask, 0)) == -1)
     {
-        CHECK((nfds = epoll_wait(epollfd, events, 2, 1000)) != -1); // 1 second
-        for(i = 0; i < nfds; i++)
-        {
-            if(events[i].data.fd == server_socket)
-            {
-                handle_accept(server_socket, sock_fd, epollfd);
-            }
-            else
-            {
-                fprintf(stderr, "PWN   : Error : Unknown fd %s:%d: %m\n", __FILE__, __LINE__);
-            }
-        }
-        handle_service_child();
+        fprintf(stderr, "Error : sigprocmask or signalfd %s:%d: %m\n", __FILE__, __LINE__);
+        exit(EXIT_FAILURE);
     }
 
     return 0;
-} 
+}
 
-int log_to_file()
+int monitor_fd(int fd)
 {
-    int fd;
-    fd = open(INIT_LOG, O_WRONLY|O_CREAT|O_TRUNC, 0600);
-    dup2(fd, STDOUT_FILENO);
-    dup2(fd, STDERR_FILENO);
-    close(fd);
+    struct epoll_event event;
+
+    event.events = EPOLLIN;
+	event.data.fd = fd;
+
+    if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) == -1)
+    {
+        fprintf(stderr, "Error : epoll_ctl %s:%d: %m\n", __FILE__, __LINE__);
+        exit(EXIT_FAILURE);
+    }
+
     return 0;
+}
+
+int service_handler()
+{
+
+    socklen_t struct_len;
+    struct sockaddr_in client_addr;
+    struct timeval timeout; 
+    int client_socket;
+    int existed_num;
+    int pid;
+    struct rlimit limit;
+
+    struct_len = sizeof(struct sockaddr_in);
+    memset(&client_addr, 0, sizeof(client_addr));
+    client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &struct_len);
+
+#ifdef LIMIT_IP
+    send_query(network_socket);
+    existed_num = receive_and_count(network_socket, client_addr.sin_addr.s_addr);
+
+    if(existed_num <= PER_SOURCE)
+#endif
+    {   
+        if(amount < MAX_PROCESS)
+        {
+            timeout.tv_sec = TIMEOUT;
+            timeout.tv_usec = 0;
+            CHECK(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != -1);
+            CHECK(setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
+
+            pid = fork();
+            if(pid == 0)
+            {
+                amount ++;
+                CHECK(sigprocmask(SIG_SETMASK, &old_mask, NULL) != -1);
+                CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != -1);
+
+#ifdef CHROOT_PATH
+                CHECK(chroot(CHROOT_PATH) != -1);
+                CHECK(chdir("/") != -1);
+#endif
+
+                sandbox();
+
+                CHECK(setgid(UID) != -1);
+                CHECK(setuid(UID) != -1);
+
+                limit.rlim_cur = MAX_CPU_TIMEOUT;
+                limit.rlim_max = MAX_CPU_TIMEOUT;
+                CHECK(setrlimit(RLIMIT_CPU, &limit) != -1);
+
+                limit.rlim_cur = MAX_PROCESS;
+                limit.rlim_max = MAX_PROCESS;
+                CHECK(setrlimit(RLIMIT_NPROC, &limit) != -1);
+
+                limit.rlim_cur = MAX_MEMORY; // 1024M
+                limit.rlim_max = MAX_MEMORY;
+                CHECK(setrlimit(RLIMIT_AS, &limit) != -1);
+
+                CHECK(close(signal_fd)      != -1);
+                CHECK(close(server_socket)  != -1);
+                CHECK(close(network_socket) != -1);
+                CHECK(close(epoll_fd)       != -1);
+
+                CHECK(dup2(client_socket, STDIN_FILENO)     != -1);
+                CHECK(dup2(client_socket, STDOUT_FILENO)    != -1);
+                CHECK(dup2(client_socket, STDERR_FILENO)    != -1);
+
+                CHECK(close(client_socket)  != -1);
+                
+                CHECK(setsid() != -1);
+
+                start_service();
+
+                for(;;)
+                    exit(EXIT_FAILURE);
+            }
+
+            if(pid != -1)
+            {
+                log_printf("Receive %s:%d with pid %d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, pid);
+            }
+            else
+            {
+                log_printf("Receive %s:%d, fork error : Resource temporarily unavailable\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+                if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
+                {
+                    log_printf("Write error : %m\n");
+                }
+            }
+        }
+        else
+        {
+            log_printf("ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+            if(write(client_socket, "There are no more resources to start a new child process, "
+                                    "please wait a while or connect to the administrator\n", 110) == -1)
+            {
+                log_printf("Write error : %m\n");
+            }
+        }
+        
+    }
+#ifdef LIMIT_IP
+    else
+    {
+        log_printf("Ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+        if(write(client_socket, "There are excessive connections from your IP\n", 45) == -1)
+        {
+            log_printf("Write error : %m\n");
+        }
+    }
+#endif   
+
+    CHECK(close(client_socket) != -1);
+
+    return 1;
+}
+
+int signal_hander()
+{
+    pid_t pid;
+    struct signalfd_siginfo fdsi;
+    int result;
+    int ret_val = 1;
+    int wstatus;
+
+    result = read(signal_fd, &fdsi, sizeof(struct signalfd_siginfo));
+    if(result == sizeof(struct signalfd_siginfo))
+    {
+        switch (fdsi.ssi_signo)
+        {
+        case SIGINT:
+            ret_val = 0;
+            log_printf("Receive signal SIGINT\n");
+            break;
+        
+        case SIGQUIT:
+            ret_val = 0;
+            log_printf("Receive signal SIGQUIT\n");
+            break;
+
+        case SIGTERM:
+            ret_val = 0;
+            log_printf("Receive signal SIGTERM\n");
+            break;
+
+        case SIGCHLD:
+            ret_val = 1;
+            handle_service_child();
+            break;
+        
+        default:
+            fprintf(stderr, "WARNNING : Read unexpected signal %d  %s:%d: %m\n", fdsi.ssi_signo, __FILE__, __LINE__);
+            break;
+        }
+    }
+    else
+    {
+        fprintf(stderr, "ERROR : read %s:%d: %m\n", __FILE__, __LINE__);
+        exit(EXIT_FAILURE);
+    }
+
+    return ret_val;
 }
 
 int main(int argc, char **argv, char **envp)
 {
-    int pid;
+    struct epoll_event ev, events[2];
+    int run, event_num, i;
+
+    CHECK((epoll_fd = epoll_create(2)) != -1);
+
+    init_socket();
+    set_sig_hander();
+    monitor_fd(signal_fd);
+    monitor_fd(server_socket);
 
 #ifndef DEBUG
     log_to_file();
@@ -852,42 +730,25 @@ int main(int argc, char **argv, char **envp)
     setlinebuf(stdout);
     setlinebuf(stderr);
 
-#ifndef DEBUG
-#ifdef CLEAN_DAEMON
-    sleep(4);
-
-    CHECK((pid = fork()) != -1);
-    if(pid == 0)
+    log_printf("Service start (pid=%d)\n", getpid());
+    run = 1;
+    while(run)
     {
-        CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
-        log_printf("CLEAN : clean_handle start with pid %d\n", getpid());
-        clean_handle();
-        log_printf("CLEAN : clean_handle end\n");
-        exit(EXIT_SUCCESS);
+        event_num = epoll_wait(epoll_fd, events, sizeof(events)/sizeof(events[0]), 1000);
+        for(i = 0; i < event_num; i++)
+        {
+            if(events[i].data.fd == signal_fd)
+            {
+                run = signal_hander();
+            }
+            else if(events[i].data.fd == server_socket)
+            {
+                run = service_handler();
+            }
+        }
+        clean_process();
     }
-#endif
-#endif
-
-#ifndef DEBUG
-    sleep(4);
-
-    CHECK((pid = fork()) != -1);
-    if(pid == 0)
-#endif 
-    {
-        CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
-        log_printf("PWN   : pwn_service start with pid %d\n", getpid());
-        pwn_service();
-        log_printf("PWN   : pwn_service end\n");
-        exit(EXIT_SUCCESS);
-    }
-
-    /* Init process */
-    setup_signal_handlers();
-
-    log_printf("INIT  : init_handle start with pid %d\n", getpid());
-    init_handle();
-    log_printf("INIT  : init_handle end\n");
+    log_printf("Service end\n");
     
     return 0;
 }
