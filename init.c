@@ -425,35 +425,35 @@ int handle_service_child()
         {
             if (WIFEXITED(status))
             {
-                log_printf("Pid: %d    exited, status = %d\n", r, WEXITSTATUS(status));
-                amount--;
+                if(amount > 0) amount--;
+                log_printf("Pid: %d    exited, status = %d  (amount=%d)\n", r, WEXITSTATUS(status), amount);
             }
             else if (WIFSIGNALED(status))
             {
+                if(amount > 0) amount--;
                 if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
                 {
-                    log_printf("Pid: %d    killed by signal %s\n", r, sig_name[WTERMSIG(status)]);
+                    log_printf("Pid: %d    killed by signal %s  (amount=%d)\n", r, sig_name[WTERMSIG(status)], amount);
                 }
                 else
                 {
-                    log_printf("Pid: %d    killed by signal %d\n", r, WTERMSIG(status));
+                    log_printf("Pid: %d    killed by signal %d  (amount=%d)\n", r, WTERMSIG(status), amount);
                 }
-                amount--;
             }
             else if (WIFSTOPPED(status))
             {
                 if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
                 {
-                    log_printf("Pid: %d    stopped by signal %s\n", r, sig_name[WSTOPSIG(status)]);
+                    log_printf("Pid: %d    stopped by signal %s  (amount=%d)\n", r, sig_name[WSTOPSIG(status)], amount);
                 }
                 else
                 {
-                    log_printf("Pid: %d    stopped by signal %d\n", r, WSTOPSIG(status));
+                    log_printf("Pid: %d    stopped by signal %d  (amount=%d)\n", r, WSTOPSIG(status), amount);
                 }
             }
             else if (WIFCONTINUED(status))
             {
-                log_printf("Pid: %d    continued\n", r);
+                log_printf("Pid: %d    continued  (amount=%d)\n", r, amount);
             }
         }
     }
@@ -580,7 +580,6 @@ int service_handler()
             pid = fork();
             if(pid == 0)
             {
-                amount ++;
                 CHECK(sigprocmask(SIG_SETMASK, &old_mask, NULL) != -1);
                 CHECK(prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != -1);
 
@@ -627,11 +626,12 @@ int service_handler()
 
             if(pid != -1)
             {
-                log_printf("Receive %s:%d with pid %d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, pid);
+                amount ++;
+                log_printf("Receive %s:%d (pid=%d,amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, pid, amount, existed_num);
             }
             else
             {
-                log_printf("Receive %s:%d, fork error : Resource temporarily unavailable\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+                log_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, amount, existed_num);
                 if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
                 {
                     log_printf("Write error : %m\n");
@@ -640,7 +640,7 @@ int service_handler()
         }
         else
         {
-            log_printf("ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+            log_printf("Failed at %s:%d, run out of resources (amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, amount, existed_num);
             if(write(client_socket, "There are no more resources to start a new child process, "
                                     "please wait a while or connect to the administrator\n", 110) == -1)
             {
@@ -652,7 +652,7 @@ int service_handler()
 #ifdef LIMIT_IP
     else
     {
-        log_printf("Ban %s:%d\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
+        log_printf("Block %s:%d (amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, amount, existed_num);
         if(write(client_socket, "There are excessive connections from your IP\n", 45) == -1)
         {
             log_printf("Write error : %m\n");
