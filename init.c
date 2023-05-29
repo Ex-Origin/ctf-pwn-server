@@ -37,7 +37,7 @@
 // the maximum instances of this service per source IP address
 #define PER_SOURCE 10
 #define PORT 10000
-#define TIMEOUT 6
+#define TIMEOUT 600
 #define UID 2301
 
 // The limitation of resource
