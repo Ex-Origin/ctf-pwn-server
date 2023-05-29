@@ -39,6 +39,7 @@
 #define PORT 10000
 #define TIMEOUT 600
 #define UID 2301
+// #define TIME_OFFSET 28800
 
 // The limitation of resource
 #define MAX_CPU_TIMEOUT 600
@@ -101,6 +102,9 @@ int log_printf( const char *format, ...)
     size_t result;
 
     CHECK(time(&now) != -1);
+#ifdef TIME_OFFSET
+    now = now + (TIME_OFFSET);
+#endif
     local = localtime(&now);
 
     hours = local->tm_hour;         // get hours since midnight (0-23)
