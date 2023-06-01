@@ -2,71 +2,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <signal.h>
-#include <sys/prctl.h>
-#include <linux/seccomp.h>
-#include <linux/filter.h>
-#include <sys/ptrace.h>
-#include <wait.h>
-#include <signal.h>
 #include <time.h>
 #include <stdarg.h>
-#include <dirent.h>
+#include <signal.h>
+#include <unistd.h>
 #include <fcntl.h>
-#include <sys/socket.h>
-#include <netdb.h>
+#include <dirent.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <arpa/inet.h>
-#include <sys/resource.h>
-#include <linux/netlink.h>  
-#include <sys/un.h>
-#include <sys/socket.h>
-#include <linux/rtnetlink.h>
-#include <linux/sock_diag.h>
-#include <linux/inet_diag.h>
-#include <errno.h>
-#include <sys/stat.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <sys/signalfd.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 
 #define INIT_LOG "/var/log/init.log"
 // #define CHROOT_PATH "/home/ctf"
 // the maximum instances of this service per source IP address
-#define PER_SOURCE 10
+#define PER_SOURCE 16
 #define PORT 10000
 #define TIMEOUT 600
 #define UID 2301
-// #define TIME_OFFSET 28800 // +8 hours
+// #define TIME_OFFSET (8*60*60) // +8 hours
 
 // The limitation of resource
-#define MAX_CPU_TIMEOUT 600
+#define MAX_CPU_TIMEOUT 60
 #define MAX_PROCESS 256
 #define MAX_MEMORY 0x40000000; // 1024M
-
-#define LIMIT_IP
 
 int start_service()
 {
     char *child_args[] = {"/bin/bash", NULL};
     return execv(child_args[0], child_args);
 }
-
-// Show more information
-#ifdef DEBUG
-#define DPRINTF printf
-#else
-#define DPRINTF(...)
-#endif
-
-int signal_fd = -1;
-int epoll_fd = -1;
-int network_socket = -1;
-int server_socket = -1;
-sigset_t old_mask;
-int amount = 0;
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -76,63 +47,36 @@ int amount = 0;
     {                                                           \
         if ((value) == 0)                                       \
         {                                                       \
-            fprintf(stderr, "%s:%d: %m\n", __FILE__, __LINE__); \
+            error_printf("%s:%d  %m\n", __FILE__, __LINE__);    \
             abort();                                            \
         }                                                       \
     }
 
-#define LOGV(variable)                           \
-    {                                            \
-        printf("" #variable ": 0x%llx (%llu)\n", \
-               (unsigned long long)(variable),   \
-               (unsigned long long)(variable));  \
-    }
+int epoll_fd = -1;
+int server_socket = -1;
+int signal_fd = -1;
+sigset_t old_mask;
 
-int log_printf( const char *format, ...)
+struct connection
 {
-    va_list args;
-    // variables to store the date and time components
-    int hours, minutes, seconds, day, month, year;
-    // `time_t` is an arithmetic time type
-    time_t now = 0;
-    // localtime converts a `time_t` value to calendar time and
-    // returns a pointer to a `tm` structure with its members
-    // filled with the corresponding values
-    struct tm *local;
-    size_t result;
+    struct in6_addr addr;
+    in_port_t port;
+    pid_t pid;
+    time_t start;
+};
 
-    CHECK(time(&now) != -1);
-#ifdef TIME_OFFSET
-    now = now + (TIME_OFFSET);
-#endif
-    local = localtime(&now);
-
-    hours = local->tm_hour;         // get hours since midnight (0-23)
-    minutes = local->tm_min;        // get minutes passed after the hour (0-59)
-    seconds = local->tm_sec;        // get seconds passed after a minute (0-59)
- 
-    day = local->tm_mday;            // get day of month (1 to 31)
-    month = local->tm_mon + 1;      // get month of year (0 to 11)
-    year = local->tm_year + 1900;   // get year since 1900
-
-    fprintf(stdout, "[%04d-%02d-%02d %02d:%02d:%02d] -- ", year, month, day, hours, minutes, seconds);
-
-    va_start(args, format);
-    result = vfprintf (stdout, format, args);
-    va_end (args);
-
-    return result;
-}
+int cons_len = 0;
+struct connection cons[MAX_PROCESS] = {0};
 
 char *sig_name[] = {
-    NULL,
+    "0",
     "SIGHUP",
     "SIGINT",
     "SIGQUIT",
     "SIGILL",
     "SIGTRAP",
     "SIGABRT",
-    NULL,
+    "7",
     "SIGFPE",
     "SIGKILL",
     "SIGBUS",
@@ -154,67 +98,143 @@ char *sig_name[] = {
     "SIGVTALRM",
     "SIGPROF",
     "SIGWINCH",
-    NULL,
+    "29",
     "SIGUSR1",
     "SIGUSR2",
     "__SIGRTMIN"
 };
 
-int is_num(const char *s)
+int prefix_printf(FILE* fp, char *level)
 {
-    int result = 1;
-    int i;
+    va_list args;
+    // variables to store the date and time components
+    int hours, minutes, seconds, day, month, year;
+    // `time_t` is an arithmetic time type
+    time_t now = 0;
+    // localtime converts a `time_t` value to calendar time and
+    // returns a pointer to a `tm` structure with its members
+    // filled with the corresponding values
+    struct tm *local;
+    size_t result;
 
-    for(i = 0, result = 1; result && s[i]; i++)
-    {
-        if(!(s[i] >= '0' && s[i] <= '9'))
-        {
-            result = 0;
-        }
-    }
+    now = time(NULL);
+#ifdef TIME_OFFSET
+    now = now + (TIME_OFFSET);
+#endif
+    local = localtime(&now);
+
+    hours = local->tm_hour;         // get hours since midnight (0-23)
+    minutes = local->tm_min;        // get minutes passed after the hour (0-59)
+    seconds = local->tm_sec;        // get seconds passed after a minute (0-59)
+ 
+    day = local->tm_mday;            // get day of month (1 to 31)
+    month = local->tm_mon + 1;      // get month of year (0 to 11)
+    year = local->tm_year + 1900;   // get year since 1900
+
+    result = fprintf(stdout, "%04d-%02d-%02d %02d:%02d:%02d | %-7s | ", year, month, day, hours, minutes, seconds, level);
 
     return result;
 }
 
-int proc_check(int pid)
+#ifdef DEBUG
+int debug_printf(const char *format, ...)
 {
-    char path[0x100];
-    struct stat sb;
+    va_list args;
+    size_t result;
 
-    memset(path, 0, sizeof(path));
-    snprintf(path, sizeof(path)-1, "/proc/%d/status", pid);
+    prefix_printf(stdout, "DEBUG");
+    va_start(args, format);
+    result = vfprintf (stdout, format, args);
+    va_end (args);
+    return result;
+}
+#else
+#define debug_printf(...)
+#endif
 
-    memset(&sb, 0, sizeof(struct stat));
-    if(stat(path, &sb) != -1)
-    {
-        if(sb.st_uid == UID && (time(NULL) - sb.st_ctime) > TIMEOUT)
-        {
-            kill(pid, SIGKILL);
-            log_printf("Killed timeout process (pid=%d)\n", pid);
-        }
-    }
+int info_printf(const char *format, ...)
+{
+    va_list args;
+    size_t result;
+
+    prefix_printf(stdout, "INFO");
+    va_start(args, format);
+    result = vfprintf (stdout, format, args);
+    va_end (args);
+    return result;
+}
+
+int warning_printf(const char *format, ...)
+{
+    va_list args;
+    size_t result;
+    
+    prefix_printf(stdout, "WARNING");
+    va_start(args, format);
+    result = vfprintf (stdout, format, args);
+    va_end (args);
+    return result;
+}
+
+int error_printf(const char *format, ...)
+{
+    va_list args;
+    size_t result;
+    
+    prefix_printf(stdout, "ERROR");
+    va_start(args, format);
+    result = vfprintf (stdout, format, args);
+    va_end (args);
+    return result;
+}
+
+int init_socket()
+{
+    int value;
+    struct sockaddr_in6 serverAddressV6;
+
+    CHECK((server_socket = socket(AF_INET6, SOCK_STREAM, 0)) != -1);
+
+    // Don't wait WAIT signal.
+    value = 1;
+    CHECK(setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) != -1);
+    
+    memset(&serverAddressV6, 0, sizeof(serverAddressV6));
+    serverAddressV6.sin6_family = AF_INET6;
+    serverAddressV6.sin6_port = htons(PORT);
+    inet_pton(AF_INET6, "::", &serverAddressV6.sin6_addr);
+
+    CHECK(bind(server_socket, (struct sockaddr *)&serverAddressV6, sizeof(struct sockaddr_in6)) != -1);
+
+    CHECK(listen(server_socket, 16) != -1);
 
     return 0;
 }
 
-int clean_process()
+int set_sig_hander()
 {
-    struct dirent **namelist;
-    int n, i;
+    sigset_t new_mask;
 
-    CHECK((n = scandir("/proc", &namelist, NULL, alphasort)) != -1);
+    sigemptyset(&new_mask);
+    sigaddset(&new_mask, SIGINT);
+    sigaddset(&new_mask, SIGTERM);
+    sigaddset(&new_mask, SIGQUIT);
+    sigaddset(&new_mask, SIGCHLD);
 
-    for(i = 0; i < n; i++)
-    {
-        if(namelist[i]->d_type == DT_DIR)
-        {
-            proc_check(atoi(namelist[i]->d_name));
-        }
+    CHECK(sigprocmask(SIG_BLOCK, &new_mask, &old_mask) != -1);
+    CHECK((signal_fd = signalfd(-1, &new_mask, 0)) != -1);
 
-        free(namelist[i]);
-    }
+    return 0;
+}
 
-    free(namelist);
+int monitor_fd(int fd)
+{
+    struct epoll_event event;
+
+    event.events = EPOLLIN;
+	event.data.fd = fd;
+
+    CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) != -1);
 
     return 0;
 }
@@ -256,10 +276,7 @@ int sandbox()
 
         if(existed == 0 && enable == 1)
         {
-            if(prctl(PR_CAPBSET_DROP, i, 0, 0, 0) == -1)
-            {
-                fprintf(stderr, "ERROR : prctl:PR_CAPBSET_DROP %s:%d: %m\n", __FILE__, __LINE__);
-            }
+            CHECK(prctl(PR_CAPBSET_DROP, i, 0, 0, 0) != -1);
         }
 
         i++;
@@ -267,320 +284,57 @@ int sandbox()
     return 0;
 }
 
-#ifdef LIMIT_IP
-int send_query(int fd)
-{
-    struct sockaddr_nl nladdr = {
-        .nl_family = AF_NETLINK
-    };
-    struct
-    {
-        struct nlmsghdr nlh;
-        struct inet_diag_req_raw idr;
-    } req = {
-        .nlh = {
-            .nlmsg_len = sizeof(req),
-            .nlmsg_type = SOCK_DIAG_BY_FAMILY,
-            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP
-        },
-        .idr = {
-            .sdiag_family = AF_INET,
-            .sdiag_protocol = IPPROTO_TCP,
-            .idiag_states = 1<<TCP_ESTABLISHED|1<<TCP_SYN_SENT|1<<TCP_FIN_WAIT1|1<<TCP_FIN_WAIT2|1<<TCP_CLOSE_WAIT|1<<TCP_LAST_ACK|1<<TCP_CLOSING|0x1,
-        }
-    };
-    struct iovec iov = {
-        .iov_base = &req,
-        .iov_len = sizeof(req)
-    };
-    struct msghdr msg = {
-        .msg_name = &nladdr,
-        .msg_namelen = sizeof(nladdr),
-        .msg_iov = &iov,
-        .msg_iovlen = 1
-    };
-
-    for (;;) {
-        if (sendmsg(fd, &msg, 0) < 0) {
-            if (errno == EINTR)
-                continue;
-
-            log_printf("Sendmsg error : %m\n");
-            return -1;
-        }
-
-        return 0;
-    }
-}
-
-int compare_diag(const struct inet_diag_msg *diag, unsigned int len, in_addr_t target)
-{
-    in_addr_t dst_addr;
-    int result;
-    int port;
-
-    if (len < NLMSG_LENGTH(sizeof(*diag))) {
-        log_printf("Short response\n");
-        return 0;
-    }
-    if (diag->idiag_family != AF_INET) {
-        log_printf("Unexpected family %u\n", diag->idiag_family);
-        return 0;
-    }
-
-    dst_addr = diag->id.idiag_dst[0];
-    port = diag->id.idiag_sport;
-
-    if(target == dst_addr && port == htons(PORT))
-    {
-        result = 1;
-    }
-    else
-    {
-        result = 0;
-    }
-
-    return result;
-}
-
-int receive_and_count(int fd, in_addr_t target)
-{
-    long buf[8192 / sizeof(long)];
-    struct sockaddr_nl nladdr;
-    struct iovec iov = {
-        .iov_base = buf,
-        .iov_len = sizeof(buf)
-    };
-    int flags = 0;
-    const struct nlmsghdr *h;
-    const struct nlmsgerr *err;
-    int result = 0;
-
-    for (;;) {
-        struct msghdr msg = {
-            .msg_name = &nladdr,
-            .msg_namelen = sizeof(nladdr),
-            .msg_iov = &iov,
-            .msg_iovlen = 1
-        };
-
-        ssize_t ret = recvmsg(fd, &msg, flags);
-
-        if (ret < 0) {
-            if (errno == EINTR)
-                continue;
-
-            log_printf("Sendmsg error : %m\n");
-            return -1;
-        }
-        if (ret == 0)
-            return result;
-
-        if (nladdr.nl_family != AF_NETLINK) {
-            log_printf("!AF_NETLINK\n");
-            return -1;
-        }
-
-        h = (struct nlmsghdr *) buf;
-
-        if (!NLMSG_OK(h, ret)) {
-            log_printf("!NLMSG_OK\n");
-            return -1;
-        }
-
-        for (; NLMSG_OK(h, ret); h = NLMSG_NEXT(h, ret)) {
-            if (h->nlmsg_type == NLMSG_DONE)
-                return result;
-
-            if (h->nlmsg_type == NLMSG_ERROR) {
-                err = NLMSG_DATA(h);
-
-                if (h->nlmsg_len < NLMSG_LENGTH(sizeof(*err))) {
-                    log_printf("NLMSG_ERROR\n");
-                } else {
-                    errno = -err->error;
-                    log_printf("NLMSG_ERROR\n");
-                }
-
-                return -1;
-            }
-
-            if (h->nlmsg_type != SOCK_DIAG_BY_FAMILY) {
-                log_printf("Unexpected nlmsg_type %u\n", (unsigned) h->nlmsg_type);
-                return -1;
-            }
-
-            result += compare_diag(NLMSG_DATA(h), h->nlmsg_len, target);
-        }
-    }
-
-    return result;
-}
-#endif
-
-int handle_service_child()
-{
-    int r = 0, status = 0;
-
-    for(r = 1; r != 0 && r!= -1; )
-    {
-        r = waitpid(-1, &status, WNOHANG);
-        if(r > 0)
-        {
-            if (WIFEXITED(status))
-            {
-                if(amount > 0) amount--;
-                log_printf("Pid: %d    exited, status = %d  (amount=%d)\n", r, WEXITSTATUS(status), amount);
-            }
-            else if (WIFSIGNALED(status))
-            {
-                if(amount > 0) amount--;
-                if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WTERMSIG(status)])
-                {
-                    log_printf("Pid: %d    killed by signal %s  (amount=%d)\n", r, sig_name[WTERMSIG(status)], amount);
-                }
-                else
-                {
-                    log_printf("Pid: %d    killed by signal %d  (amount=%d)\n", r, WTERMSIG(status), amount);
-                }
-            }
-            else if (WIFSTOPPED(status))
-            {
-                if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*) && sig_name[WSTOPSIG(status)])
-                {
-                    log_printf("Pid: %d    stopped by signal %s  (amount=%d)\n", r, sig_name[WSTOPSIG(status)], amount);
-                }
-                else
-                {
-                    log_printf("Pid: %d    stopped by signal %d  (amount=%d)\n", r, WSTOPSIG(status), amount);
-                }
-            }
-            else if (WIFCONTINUED(status))
-            {
-                log_printf("Pid: %d    continued  (amount=%d)\n", r, amount);
-            }
-        }
-    }
-
-    return 0;
-}
-
-int log_to_file()
-{
-    int fd;
-    fd = open(INIT_LOG, O_WRONLY|O_CREAT|O_TRUNC, 0600);
-    dup2(fd, STDOUT_FILENO);
-    dup2(fd, STDERR_FILENO);
-    close(fd);
-    return 0;
-}
-
-int init_socket()
-{
-    int value;
-    struct sockaddr_nl src_addr;
-    struct sockaddr_in server_addr;
-
-    #ifdef LIMIT_IP
-    // https://man7.org/linux/man-pages/man7/sock_diag.7.html
-    CHECK((network_socket = socket(AF_NETLINK, SOCK_RAW|SOCK_CLOEXEC, NETLINK_SOCK_DIAG)) != -1);
-    value = 32768;
-    CHECK(setsockopt(network_socket, SOL_SOCKET, SO_SNDBUF, &value, sizeof(value)) != -1);
-    value = 1048576;
-    CHECK(setsockopt(network_socket, SOL_SOCKET, SO_RCVBUF, &value, sizeof(value)) != -1);
-    value = 1;
-    CHECK(setsockopt(network_socket, SOL_NETLINK, NETLINK_EXT_ACK, &value, sizeof(value)) != -1);
-
-    memset(&src_addr, 0, sizeof(src_addr));
-    src_addr.nl_family = AF_NETLINK;
-    src_addr.nl_pid = 0;  /* all */  
-    src_addr.nl_groups = 0;
-
-    CHECK(bind(network_socket, (struct sockaddr*)&src_addr, sizeof(src_addr)) != -1);
-#endif
-
-    CHECK((server_socket = socket(AF_INET, SOCK_STREAM, 0)) != -1);
-
-    // Don't wait WAIT signal.
-    value = 1;
-    CHECK(setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) != -1);
-    
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-
-    CHECK(bind(server_socket, (struct sockaddr *)&server_addr, sizeof(struct sockaddr_in)) != -1);
-
-    CHECK(listen(server_socket, 16) != -1);
-
-    return 0;
-}
-
-int set_sig_hander()
-{
-    sigset_t new_mask;
-
-    sigemptyset(&new_mask);
-    sigaddset(&new_mask, SIGINT);
-    sigaddset(&new_mask, SIGTERM);
-    sigaddset(&new_mask, SIGQUIT);
-    sigaddset(&new_mask, SIGCHLD);
-
-    if (sigprocmask(SIG_BLOCK, &new_mask, &old_mask) == -1 || (signal_fd = signalfd(-1, &new_mask, 0)) == -1)
-    {
-        fprintf(stderr, "Error : sigprocmask or signalfd %s:%d: %m\n", __FILE__, __LINE__);
-        exit(EXIT_FAILURE);
-    }
-
-    return 0;
-}
-
-int monitor_fd(int fd)
-{
-    struct epoll_event event;
-
-    event.events = EPOLLIN;
-	event.data.fd = fd;
-
-    if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) == -1)
-    {
-        fprintf(stderr, "Error : epoll_ctl %s:%d: %m\n", __FILE__, __LINE__);
-        exit(EXIT_FAILURE);
-    }
-
-    return 0;
-}
-
 int service_handler()
 {
-
     socklen_t struct_len;
-    struct sockaddr_in client_addr;
+    struct sockaddr_in6 client_addr;
     struct timeval timeout; 
     int client_socket;
     int existed_num;
     int pid;
     struct rlimit limit;
+    char clientIP[INET6_ADDRSTRLEN], *ip_ptr;
+    int clientPort;
+    time_t now;
+    int i;
 
-    struct_len = sizeof(struct sockaddr_in);
+    struct_len = sizeof(client_addr);
     memset(&client_addr, 0, sizeof(client_addr));
     client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &struct_len);
+    now = time(NULL);
+    // Get the client's IP address and port
+    inet_ntop(AF_INET6, &(client_addr.sin6_addr), clientIP, INET6_ADDRSTRLEN);
+    if (clientIP[0] == ':')
+    {
+        ip_ptr = clientIP + 7;
+    }
+    else
+    {
+        ip_ptr = clientIP;
+    }
+    clientPort = ntohs(client_addr.sin6_port);
 
-#ifdef LIMIT_IP
-    send_query(network_socket);
-    existed_num = receive_and_count(network_socket, client_addr.sin_addr.s_addr);
-
-    if(existed_num <= PER_SOURCE)
-#endif
-    {   
-        if(amount < MAX_PROCESS)
+    if(cons_len < MAX_PROCESS)
+    {
+        existed_num = 1;
+        for(i = 0; i < cons_len; i++)
         {
+            if(memcmp(&cons[i].addr, &client_addr.sin6_addr, sizeof(cons[i].addr)) == 0)
+            {
+                existed_num++;
+            }
+        }
+
+#ifdef PER_SOURCE
+        if(existed_num <= PER_SOURCE)
+#endif
+        {
+#ifdef TIMEOUT
             timeout.tv_sec = TIMEOUT;
             timeout.tv_usec = 0;
             CHECK(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != -1);
             CHECK(setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
-
+#endif
             pid = fork();
             if(pid == 0)
             {
@@ -594,33 +348,41 @@ int service_handler()
 
                 sandbox();
 
+#ifdef UID
                 CHECK(setgid(UID) != -1);
                 CHECK(setuid(UID) != -1);
+#else
+                CHECK(setgid(65534) != -1);
+                CHECK(setuid(65534) != -1);
+#endif
 
+#ifdef MAX_CPU_TIMEOUT
                 limit.rlim_cur = MAX_CPU_TIMEOUT;
                 limit.rlim_max = MAX_CPU_TIMEOUT;
                 CHECK(setrlimit(RLIMIT_CPU, &limit) != -1);
+#endif
 
+#ifdef MAX_PROCESS
                 limit.rlim_cur = MAX_PROCESS;
                 limit.rlim_max = MAX_PROCESS;
                 CHECK(setrlimit(RLIMIT_NPROC, &limit) != -1);
+#endif
 
-                limit.rlim_cur = MAX_MEMORY; // 1024M
+#ifdef MAX_MEMORY
+                limit.rlim_cur = MAX_MEMORY;
                 limit.rlim_max = MAX_MEMORY;
                 CHECK(setrlimit(RLIMIT_AS, &limit) != -1);
+#endif
 
                 CHECK(close(signal_fd)      != -1);
                 CHECK(close(server_socket)  != -1);
-                CHECK(close(network_socket) != -1);
                 CHECK(close(epoll_fd)       != -1);
 
-                CHECK(dup2(client_socket, STDIN_FILENO)     != -1);
-                CHECK(dup2(client_socket, STDOUT_FILENO)    != -1);
-                CHECK(dup2(client_socket, STDERR_FILENO)    != -1);
-
+                CHECK(dup2(client_socket, STDIN_FILENO) != -1);
                 CHECK(close(client_socket)  != -1);
-                
                 CHECK(setsid() != -1);
+                dup2(STDIN_FILENO, STDOUT_FILENO);
+                dup2(STDIN_FILENO, STDERR_FILENO);
 
                 start_service();
 
@@ -630,43 +392,136 @@ int service_handler()
 
             if(pid != -1)
             {
-                amount ++;
-                log_printf("Receive %s:%d (pid=%d,amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, pid, amount, existed_num);
+                cons[cons_len].addr  = client_addr.sin6_addr;
+                cons[cons_len].port  = clientPort;
+                cons[cons_len].pid   = pid;
+                cons[cons_len].start = now;
+                cons_len ++;
+                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, pid, cons_len, existed_num);
             }
             else
             {
-                log_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, amount, existed_num);
+                info_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
                 if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
                 {
-                    log_printf("Write error : %m\n");
+                    warning_printf("Write error : %m\n");
                 }
             }
         }
+#ifdef PER_SOURCE
         else
         {
-            log_printf("Failed at %s:%d, run out of resources (amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, amount, existed_num);
-            if(write(client_socket, "There are no more resources to start a new child process, "
-                                    "please wait a while or connect to the administrator\n", 110) == -1)
+            info_printf("Block %s:%d (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
+            if(write(client_socket, "There are excessive connections from your IP\n", 45) == -1)
             {
-                log_printf("Write error : %m\n");
+                warning_printf("Write error : %m\n");
             }
         }
-        
+#endif  
     }
-#ifdef LIMIT_IP
     else
     {
-        log_printf("Block %s:%d (amount=%d,existed_num=%d)\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, amount, existed_num);
-        if(write(client_socket, "There are excessive connections from your IP\n", 45) == -1)
+        info_printf("Failed at %s:%d, run out of resources (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
+        if(write(client_socket, "There are no more resources to start a new child process, "
+                                "please wait a while or connect to the administrator\n", 110) == -1)
         {
-            log_printf("Write error : %m\n");
+            warning_printf("Write error : %m\n");
         }
     }
-#endif   
 
     CHECK(close(client_socket) != -1);
 
     return 1;
+}
+
+int handle_service_child()
+{
+    int r = 0, status = 0;
+    int i, is_con = 0, index;
+    time_t spend;
+
+    for(r = 1; r != 0 && r!= -1; )
+    {
+        r = waitpid(-1, &status, WNOHANG);
+        if(r > 0)
+        {
+            is_con = 0;
+            for(i = 0; i < cons_len; i++)
+            {
+                if(cons[i].pid == r)
+                {
+                    if (cons_len > 0) cons_len --;
+                    spend = time(NULL) - cons[i].start;
+                    is_con = 1;
+                    index = i;
+                    break;
+                }
+            }
+
+            if (WIFEXITED(status))
+            {
+                if(is_con)
+                {
+                    info_printf("Pid: %d    exited,status=%d,time=%ds  (cons_len=%d)\n", r, WEXITSTATUS(status), spend, cons_len);
+                }
+                else
+                {
+                    warning_printf("Pid: %d    exited,status=%d, not in cons  (cons_len=%d)\n", r, WEXITSTATUS(status), cons_len);
+                }
+            }
+            else if (WIFSIGNALED(status))
+            {
+                if(is_con)
+                {
+                    if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*))
+                    {
+                        info_printf("Pid: %d    killed by signal %s,time=%ds  (cons_len=%d)\n", r, sig_name[WTERMSIG(status)], spend, cons_len);
+                    }
+                    else
+                    {
+                        info_printf("Pid: %d    killed by signal %d,time=%ds  (cons_len=%d)\n", r, WTERMSIG(status), spend, cons_len);
+                    }
+                }
+                else
+                {
+                    if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*))
+                    {
+                        warning_printf("Pid: %d    killed by signal %s  (cons_len=%d)\n", r, sig_name[WTERMSIG(status)], cons_len);
+                    }
+                    else
+                    {
+                        warning_printf("Pid: %d    killed by signal %d  (cons_len=%d)\n", r, WTERMSIG(status), cons_len);
+                    }
+                }
+            }
+            else if (WIFSTOPPED(status))
+            {
+                if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*))
+                {
+                    warning_printf("Pid: %d    stopped by signal %s  (cons_len=%d)\n", r, sig_name[WSTOPSIG(status)], cons_len);
+                }
+                else
+                {
+                    warning_printf("Pid: %d    stopped by signal %d  (cons_len=%d)\n", r, WSTOPSIG(status), cons_len);
+                }
+            }
+            else if (WIFCONTINUED(status))
+            {
+                warning_printf("Pid: %d    continued  (cons_len=%d)\n", r, cons_len);
+            }
+
+            if(is_con)
+            {
+                if(index != cons_len)
+                {
+                    memcpy(&cons[index], &cons[cons_len], sizeof(*cons));
+                    memset(&cons[cons_len], 0, sizeof(*cons));
+                }
+            }
+        }
+    }
+
+    return 0;
 }
 
 int signal_hander()
@@ -684,17 +539,17 @@ int signal_hander()
         {
         case SIGINT:
             ret_val = 0;
-            log_printf("Receive signal SIGINT\n");
+            info_printf("Receive signal SIGINT\n");
             break;
         
         case SIGQUIT:
             ret_val = 0;
-            log_printf("Receive signal SIGQUIT\n");
+            info_printf("Receive signal SIGQUIT\n");
             break;
 
         case SIGTERM:
             ret_val = 0;
-            log_printf("Receive signal SIGTERM\n");
+            info_printf("Receive signal SIGTERM\n");
             break;
 
         case SIGCHLD:
@@ -703,23 +558,92 @@ int signal_hander()
             break;
         
         default:
-            fprintf(stderr, "WARNNING : Read unexpected signal %d  %s:%d: %m\n", fdsi.ssi_signo, __FILE__, __LINE__);
+            warning_printf("Read unexpected signal %d  %s:%d: %m\n", fdsi.ssi_signo, __FILE__, __LINE__);
             break;
         }
     }
     else
     {
-        fprintf(stderr, "ERROR : read %s:%d: %m\n", __FILE__, __LINE__);
+        error_printf("ERROR : read %s:%d: %m\n", __FILE__, __LINE__);
         exit(EXIT_FAILURE);
     }
 
     return ret_val;
 }
 
-int main(int argc, char **argv, char **envp)
+int clean_process()
+{
+#ifdef TIMEOUT
+    struct dirent *d;
+    int fd;
+    char buf[0x400];
+    char path[0x100];
+    int nread;
+    size_t bpos;
+    int is_num;
+    int i;
+    int pid;
+    struct stat sb;
+
+    CHECK((fd = open("/proc", O_RDONLY)) != -1);
+
+    for(;;)
+    {
+        memset(buf, 0, sizeof(buf));
+        CHECK((nread = syscall(SYS_getdents, fd, (struct dirent *)buf, sizeof(buf))) != -1);
+        if(nread == 0)
+        {
+            break;
+        }
+
+        for (bpos = 0; bpos < nread;) 
+        {
+            d = (struct dirent *) (buf + bpos);
+            is_num = 1;
+            for(i = 0; d->d_name[i]; i++)
+            {
+                if(!(d->d_name[i] >= '0' && d->d_name[i] <= '9'))
+                {
+                    is_num = 0;
+                    break;
+                }
+            }
+            if(is_num)
+            {
+                pid = atoi(d->d_name);
+                memset(path, 0, sizeof(path));
+                snprintf(path, sizeof(path)-1, "/proc/%d/status", pid);
+                if(stat(path, &sb) != -1)
+                {
+#ifdef UID
+                    if(sb.st_uid == UID && (time(NULL) - sb.st_ctime) > TIMEOUT)
+#else
+                    if(sb.st_uid == 65534 && (time(NULL) - sb.st_ctime) > TIMEOUT)
+#endif
+                    {
+                        kill(pid, SIGKILL);
+                        info_printf("Killed timeout process (pid=%d)\n", pid);
+                    }
+                }
+            }
+            bpos += d->d_reclen;
+        }
+
+    }
+
+    CHECK(close(fd) != -1);
+#endif
+    return 0;
+}
+
+int main()
 {
     struct epoll_event ev, events[2];
     int run, event_num, i;
+
+    setvbuf(stdin, NULL, _IOLBF, 0);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
 
     CHECK((epoll_fd = epoll_create(2)) != -1);
 
@@ -728,13 +652,7 @@ int main(int argc, char **argv, char **envp)
     monitor_fd(signal_fd);
     monitor_fd(server_socket);
 
-#ifndef DEBUG
-    log_to_file();
-#endif
-    setlinebuf(stdout);
-    setlinebuf(stderr);
-
-    log_printf("Service start (pid=%d)\n", getpid());
+    info_printf("Service start (pid=%d)\n", getpid());
     run = 1;
     while(run)
     {
@@ -752,7 +670,6 @@ int main(int argc, char **argv, char **envp)
         }
         clean_process();
     }
-    log_printf("Service end\n");
-    
+    info_printf("Service end\n");
     return 0;
 }
