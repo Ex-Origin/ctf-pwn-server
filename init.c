@@ -135,7 +135,7 @@ int prefix_printf(FILE* fp, char *level)
     month = local->tm_mon + 1;      // get month of year (0 to 11)
     year = local->tm_year + 1900;   // get year since 1900
 
-    result = fprintf(stdout, "%04d-%02d-%02d %02d:%02d:%02d | %-7s | ", year, month, day, hours, minutes, seconds, level);
+    result = fprintf(fp, "%04d-%02d-%02d %02d:%02d:%02d | %-7s | ", year, month, day, hours, minutes, seconds, level);
 
     return result;
 }
