@@ -232,7 +232,7 @@ int monitor_fd(int fd)
     struct epoll_event event;
 
     event.events = EPOLLIN;
-	event.data.fd = fd;
+    event.data.fd = fd;
 
     CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) != -1);
 
@@ -401,10 +401,10 @@ int service_handler()
             }
             else
             {
-                info_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
+                warning_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
                 if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
                 {
-                    warning_printf("Write error : %m\n");
+                    warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
                 }
             }
         }
@@ -414,18 +414,18 @@ int service_handler()
             info_printf("Block %s:%d (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
             if(write(client_socket, "There are excessive connections from your IP\n", 45) == -1)
             {
-                warning_printf("Write error : %m\n");
+                warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
             }
         }
 #endif  
     }
     else
     {
-        info_printf("Failed at %s:%d, run out of resources (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
+        warning_printf("Failed at %s:%d, run out of resources (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
         if(write(client_socket, "There are no more resources to start a new child process, "
                                 "please wait a while or connect to the administrator\n", 110) == -1)
         {
-            warning_printf("Write error : %m\n");
+            warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
         }
     }
 
@@ -558,13 +558,13 @@ int signal_hander()
             break;
         
         default:
-            warning_printf("Read unexpected signal %d  %s:%d: %m\n", fdsi.ssi_signo, __FILE__, __LINE__);
+            warning_printf("Read unexpected signal %d  %s:%d  %m\n", fdsi.ssi_signo, __FILE__, __LINE__);
             break;
         }
     }
     else
     {
-        error_printf("ERROR : read %s:%d: %m\n", __FILE__, __LINE__);
+        error_printf("read error  %s:%d  %m\n", __FILE__, __LINE__);
         exit(EXIT_FAILURE);
     }
 
@@ -636,6 +636,18 @@ int clean_process()
     return 0;
 }
 
+int log_to_file()
+{
+#ifdef INIT_LOG
+    int fd;
+    CHECK((fd = open(INIT_LOG, O_WRONLY|O_CREAT|O_TRUNC, 0600)) != -1);
+    CHECK(dup2(fd, STDOUT_FILENO) != -1);
+    CHECK(dup2(fd, STDERR_FILENO) != -1);
+    CHECK(close(fd)               != -1);
+#endif
+    return 0;
+}
+
 int main()
 {
     struct epoll_event ev, events[2];
@@ -644,6 +656,16 @@ int main()
     setvbuf(stdin, NULL, _IOLBF, 0);
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
+
+    if(getuid() != 0)
+    {
+        error_printf("Please execute the program with root privileges.\n");
+        exit(EXIT_FAILURE);
+    }
+
+#ifndef DEBUG
+    log_to_file();
+#endif
 
     CHECK((epoll_fd = epoll_create(2)) != -1);
 
