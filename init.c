@@ -66,7 +66,11 @@ struct connection
 };
 
 int cons_len = 0;
+#ifdef MAX_PROCESS
 struct connection cons[MAX_PROCESS] = {0};
+#else
+struct connection cons[1024] = {0};
+#endif
 
 char *sig_name[] = {
     "0",
@@ -314,7 +318,7 @@ int service_handler()
     }
     clientPort = ntohs(client_addr.sin6_port);
 
-    if(cons_len < MAX_PROCESS)
+    if(cons_len < (sizeof(cons)/sizeof(*cons)))
     {
         existed_num = 1;
         for(i = 0; i < cons_len; i++)
