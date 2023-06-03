@@ -297,7 +297,7 @@ int service_handler()
     int existed_num;
     int pid;
     struct rlimit limit;
-    char clientIP[INET6_ADDRSTRLEN], *ip_ptr;
+    char clientIP[INET6_ADDRSTRLEN], ip_buf[0x100];
     int clientPort;
     time_t now;
     int i;
@@ -307,14 +307,16 @@ int service_handler()
     client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &struct_len);
     now = time(NULL);
     // Get the client's IP address and port
+    memset(clientIP, 0, sizeof(clientIP));
     inet_ntop(AF_INET6, &(client_addr.sin6_addr), clientIP, INET6_ADDRSTRLEN);
+    memset(ip_buf, 0, sizeof(ip_buf));
     if (clientIP[0] == ':')
     {
-        ip_ptr = clientIP + 7;
+        snprintf(ip_buf, sizeof(ip_buf)-1, "%s", clientIP + 7);
     }
     else
     {
-        ip_ptr = clientIP;
+        snprintf(ip_buf, sizeof(ip_buf)-1, "[%s]", clientIP);
     }
     clientPort = ntohs(client_addr.sin6_port);
 
@@ -401,11 +403,11 @@ int service_handler()
                 cons[cons_len].pid   = pid;
                 cons[cons_len].start = now;
                 cons_len ++;
-                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, pid, cons_len, existed_num);
+                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num);
             }
             else
             {
-                warning_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
+                warning_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, cons_len, existed_num);
                 if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
                 {
                     warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
@@ -415,7 +417,7 @@ int service_handler()
 #ifdef PER_SOURCE
         else
         {
-            info_printf("Block %s:%d (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
+            info_printf("Block %s:%d (cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, cons_len, existed_num);
             if(write(client_socket, "There are excessive connections from your IP\n", 45) == -1)
             {
                 warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
@@ -425,7 +427,7 @@ int service_handler()
     }
     else
     {
-        warning_printf("Failed at %s:%d, run out of resources (cons_len=%d,existed_num=%d)\n", ip_ptr, clientPort, cons_len, existed_num);
+        warning_printf("Failed at %s:%d, run out of resources (cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, cons_len, existed_num);
         if(write(client_socket, "There are no more resources to start a new child process, "
                                 "please wait a while or connect to the administrator\n", 110) == -1)
         {
