@@ -46,7 +46,7 @@ int start_service()
     {                                                           \
         if ((value) == 0)                                       \
         {                                                       \
-            error_printf("%s:%d  %m\n", __FILE__, __LINE__);    \
+            error_printf("%m  %s:%d\n", __FILE__, __LINE__);    \
             abort();                                            \
         }                                                       \
     }
