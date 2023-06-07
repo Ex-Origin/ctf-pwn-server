@@ -19,7 +19,6 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 
-#define INIT_LOG "/var/log/init.log"
 // #define CHROOT_PATH "/home/ctf"
 // the maximum instances of this service per source IP address
 #define PER_SOURCE 16
@@ -642,18 +641,6 @@ int clean_process()
     return 0;
 }
 
-int log_to_file()
-{
-#ifdef INIT_LOG
-    int fd;
-    CHECK((fd = open(INIT_LOG, O_WRONLY|O_CREAT|O_TRUNC, 0600)) != -1);
-    CHECK(dup2(fd, STDOUT_FILENO) != -1);
-    CHECK(dup2(fd, STDERR_FILENO) != -1);
-    CHECK(close(fd)               != -1);
-#endif
-    return 0;
-}
-
 int main()
 {
     struct epoll_event ev, events[2];
@@ -668,10 +655,6 @@ int main()
         error_printf("Please execute the program with root privileges.\n");
         exit(EXIT_FAILURE);
     }
-
-#ifndef DEBUG
-    log_to_file();
-#endif
 
     CHECK((epoll_fd = epoll_create(2)) != -1);
 
