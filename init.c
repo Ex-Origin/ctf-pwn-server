@@ -184,9 +184,9 @@ int error_printf(const char *format, ...)
     va_list args;
     size_t result;
     
-    prefix_printf(stdout, "ERROR");
+    prefix_printf(stderr, "ERROR");
     va_start(args, format);
-    result = vfprintf (stdout, format, args);
+    result = vfprintf (stderr, format, args);
     va_end (args);
     return result;
 }
