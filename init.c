@@ -23,7 +23,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 
-// #define CHROOT_PATH "/home/ctf"
+// #define CHROOT_PATH     "/home/ctf"
 // the maximum instances of this service per source IP address
 #define PER_SOURCE      16
 #define PORT            10000
@@ -31,7 +31,7 @@
 #define MAX_CONNECTION  256
 // The end of uid is (UID_START + MAX_CONNECTION - 1)
 #define UID_START       23000
-// #define TIME_OFFSET (8*60*60) // +8 hours
+// #define TIME_OFFSET     (8*60*60) // +8 hours
 
 // The limitation of resource
 #define MAX_CPU_TIMEOUT 60
