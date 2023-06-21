@@ -44,7 +44,7 @@ int start_service()
     return execv(child_args[0], child_args);
 }
 
-#define VERSION "2.1.0"
+#define VERSION "2.1.1"
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -416,6 +416,7 @@ int service_handler()
                 cons[index].pid   = pid;
                 cons[index].start = now;
                 cons_len ++;
+                cons_index ++;
 
                 info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d,uid=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num, UID_START + index);
             }
