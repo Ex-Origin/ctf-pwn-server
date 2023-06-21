@@ -1,6 +1,5 @@
 /**
  * Compile:     gcc -s -O3 init.c -o init
- * Version:     2.0.1
  * Repository:  https://github.com/Ex-Origin/docker-pwn-init
 */
 #define _GNU_SOURCE
@@ -26,21 +25,17 @@
 
 // #define CHROOT_PATH "/home/ctf"
 // the maximum instances of this service per source IP address
-#define PER_SOURCE  16
-#define PORT        10000
-#define TIMEOUT     600
-#define UID         23000
+#define PER_SOURCE      16
+#define PORT            10000
+#define TIMEOUT         600
+#define MAX_CONNECTION  256
+// The end of uid is (UID_START + MAX_CONNECTION - 1)
+#define UID_START       23000
 // #define TIME_OFFSET (8*60*60) // +8 hours
-#define ISOLATED_UID // Every connection is allocated an individual isolated UID
 
 // The limitation of resource
 #define MAX_CPU_TIMEOUT 60
-#define MAX_CONNECTION  256
-#ifndef ISOLATED_UID
-#define MAX_PROCESS     MAX_CONNECTION
-#else
 #define MAX_PROCESS     8
-#endif
 #define MAX_MEMORY      0x40000000; // 1024M
 
 int start_service()
@@ -48,6 +43,8 @@ int start_service()
     char *child_args[] = {"/bin/bash", NULL};
     return execv(child_args[0], child_args);
 }
+
+#define VERSION "2.1.0"
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -355,16 +352,13 @@ int service_handler()
         }
         CHECK(index != -1);
 
-#ifdef PER_SOURCE
         if(existed_num <= PER_SOURCE)
-#endif
         {
-#ifdef TIMEOUT
             timeout.tv_sec = TIMEOUT;
             timeout.tv_usec = 0;
             CHECK(setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != -1);
             CHECK(setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
-#endif
+
             pid = fork();
             if(pid == 0)
             {
@@ -378,23 +372,8 @@ int service_handler()
 
                 sandbox();
 
-#ifdef UID
-    #ifdef ISOLATED_UID
-                CHECK(setgid(UID + index) != -1);
-                CHECK(setuid(UID + index) != -1);
-    #else
-                CHECK(setgid(UID) != -1);
-                CHECK(setuid(UID) != -1);
-    #endif
-#else
-    #ifdef ISOLATED_UID
-                CHECK(setgid(60534 + index) != -1);
-                CHECK(setuid(60534 + index) != -1);
-    #else
-                CHECK(setgid(60534) != -1);
-                CHECK(setuid(60534) != -1);
-    #endif
-#endif
+                CHECK(setgid(UID_START + index) != -1);
+                CHECK(setuid(UID_START + index) != -1);
 
 #ifdef MAX_CPU_TIMEOUT
                 limit.rlim_cur = MAX_CPU_TIMEOUT;
@@ -437,11 +416,8 @@ int service_handler()
                 cons[index].pid   = pid;
                 cons[index].start = now;
                 cons_len ++;
-#ifdef ISOLATED_UID
-                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d,uid=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num, UID + index);
-#else
-                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d,uid=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num, UID);
-#endif
+
+                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d,uid=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num, UID_START + index);
             }
             else
             {
@@ -452,7 +428,6 @@ int service_handler()
                 }
             }
         }
-#ifdef PER_SOURCE
         else
         {
             info_printf("Block %s:%d (cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, cons_len, existed_num);
@@ -461,7 +436,6 @@ int service_handler()
                 warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
             }
         }
-#endif  
     }
     else
     {
@@ -558,24 +532,18 @@ int handle_service_child(int option)
 
             if(is_con)
             {
-#ifdef ISOLATED_UID
-                debug_printf("Terminate all processes with the UID of %d\n", UID + index);
+                debug_printf("Terminate all processes with the UID of %d\n", UID_START + index);
                 CHECK((pid2 = fork()) != -1);
                 if(pid2 == 0)
                 {
-    #ifdef UID
-                    CHECK(setgid(UID + index) != -1);
-                    CHECK(setuid(UID + index) != -1);
-    #else
-                    CHECK(setgid(60534 + index) != -1);
-                    CHECK(setuid(60534 + index) != -1);
-    #endif
+
+                    CHECK(setgid(UID_START + index) != -1);
+                    CHECK(setuid(UID_START + index) != -1);
                     kill(-1, SIGKILL);
                     while(1)
                         exit(EXIT_FAILURE);
                 }
                 CHECK(waitpid(pid2, NULL, 0) == pid2);
-#endif
                 memset(&cons[index], 0, sizeof(*cons));
             }
         }
@@ -633,8 +601,6 @@ int signal_hander()
 
 int clean_process()
 {
-#ifdef TIMEOUT
-#ifdef ISOLATED_UID
     time_t now;
     int i;
 
@@ -643,74 +609,9 @@ int clean_process()
     {
         if(now - cons[i].start > TIMEOUT)
         {
-#ifdef UID
-            kill(UID + i, SIGKILL);
-#else
-            kill(60534 + i, SIGKILL);
-#endif
+            kill(UID_START + i, SIGKILL);
         }
     }
-#else
-    struct dirent *d;
-    int fd;
-    char buf[0x400];
-    char path[0x100];
-    int nread;
-    size_t bpos;
-    int is_num;
-    int i;
-    int pid;
-    struct stat sb;
-
-    CHECK((fd = open("/proc", O_RDONLY)) != -1);
-
-    for(;;)
-    {
-        memset(buf, 0, sizeof(buf));
-        CHECK((nread = syscall(SYS_getdents, fd, (struct dirent *)buf, sizeof(buf))) != -1);
-        if(nread == 0)
-        {
-            break;
-        }
-
-        for (bpos = 0; bpos < nread;) 
-        {
-            d = (struct dirent *) (buf + bpos);
-            is_num = 1;
-            for(i = 0; d->d_name[i]; i++)
-            {
-                if(!(d->d_name[i] >= '0' && d->d_name[i] <= '9'))
-                {
-                    is_num = 0;
-                    break;
-                }
-            }
-            if(is_num)
-            {
-                pid = atoi(d->d_name);
-                memset(path, 0, sizeof(path));
-                snprintf(path, sizeof(path)-1, "/proc/%d/status", pid);
-                if(stat(path, &sb) != -1)
-                {
-#ifdef UID
-                    if(sb.st_uid == UID && (time(NULL) - sb.st_ctime) > TIMEOUT)
-#else
-                    if(sb.st_uid == 60534 && (time(NULL) - sb.st_ctime) > TIMEOUT)
-#endif
-                    {
-                        kill(pid, SIGKILL);
-                        info_printf("Killed timeout process (pid=%d)\n", pid);
-                    }
-                }
-            }
-            bpos += d->d_reclen;
-        }
-
-    }
-
-    CHECK(close(fd) != -1);
-#endif
-#endif
     return 0;
 }
 
@@ -753,7 +654,7 @@ int main()
     monitor_fd(signal_fd);
     monitor_fd(server_socket);
 
-    info_printf("Service start (pid=%d)\n", getpid());
+    info_printf("Service start (pid=%d,version=%s)\n", getpid(), VERSION);
     run = 1;
     while(run)
     {
