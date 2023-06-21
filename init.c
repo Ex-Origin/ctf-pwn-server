@@ -29,9 +29,9 @@
 #define PER_SOURCE  16
 #define PORT        10000
 #define TIMEOUT     600
-#define UID         23001
+#define UID         23000
 // #define TIME_OFFSET (8*60*60) // +8 hours
-// #define ISOLATED_UID // Every connection is allocated an individual isolated UID
+#define ISOLATED_UID // Every connection is allocated an individual isolated UID
 
 // The limitation of resource
 #define MAX_CPU_TIMEOUT 60
