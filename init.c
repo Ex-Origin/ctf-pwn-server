@@ -1,3 +1,7 @@
+/**
+ * Compile:     gcc -s -O3 init.c -o init
+ * Repository:  https://github.com/Ex-Origin/docker-pwn-init
+*/
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
