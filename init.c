@@ -21,16 +21,22 @@
 
 // #define CHROOT_PATH "/home/ctf"
 // the maximum instances of this service per source IP address
-#define PER_SOURCE 16
-#define PORT 10000
-#define TIMEOUT 600
-#define UID 2301
+#define PER_SOURCE  16
+#define PORT        10000
+#define TIMEOUT     600
+#define UID         23001
 // #define TIME_OFFSET (8*60*60) // +8 hours
+// #define ISOLATED_UID // Every connection is allocated an individual isolated UID
 
 // The limitation of resource
 #define MAX_CPU_TIMEOUT 60
-#define MAX_PROCESS 256
-#define MAX_MEMORY 0x40000000; // 1024M
+#ifndef ISOLATED_UID
+#define MAX_PROCESS     256
+#else
+#define MAX_PROCESS     8
+#endif
+#define MAX_CONNECTION  256
+#define MAX_MEMORY      0x40000000; // 1024M
 
 int start_service()
 {
@@ -65,8 +71,9 @@ struct connection
 };
 
 int cons_len = 0;
-#ifdef MAX_PROCESS
-struct connection cons[MAX_PROCESS] = {0};
+unsigned int cons_index = 0;
+#ifdef MAX_CONNECTION
+struct connection cons[MAX_CONNECTION] = {0};
 #else
 struct connection cons[1024] = {0};
 #endif
@@ -299,7 +306,7 @@ int service_handler()
     char clientIP[INET6_ADDRSTRLEN], ip_buf[0x100];
     int clientPort;
     time_t now;
-    int i;
+    int i, index;
 
     struct_len = sizeof(client_addr);
     memset(&client_addr, 0, sizeof(client_addr));
@@ -322,13 +329,26 @@ int service_handler()
     if(cons_len < (sizeof(cons)/sizeof(*cons)))
     {
         existed_num = 1;
-        for(i = 0; i < cons_len; i++)
+        for(i = 0; i < (sizeof(cons)/sizeof(*cons)); i++)
         {
             if(memcmp(&cons[i].addr, &client_addr.sin6_addr, sizeof(cons[i].addr)) == 0)
             {
                 existed_num++;
             }
         }
+
+        index = -1;
+        for(i = 0; i < (sizeof(cons)/sizeof(*cons)); i++)
+        {
+            // Find the free space
+            if(cons[((cons_index + i) % (sizeof(cons)/sizeof(*cons)))].pid == 0)
+            {
+                cons_index = ((cons_index + i) % (sizeof(cons)/sizeof(*cons)));
+                index = cons_index;
+                break;
+            }
+        }
+        CHECK(index != -1);
 
 #ifdef PER_SOURCE
         if(existed_num <= PER_SOURCE)
@@ -354,11 +374,21 @@ int service_handler()
                 sandbox();
 
 #ifdef UID
+    #ifdef ISOLATED_UID
+                CHECK(setgid(UID + index) != -1);
+                CHECK(setuid(UID + index) != -1);
+    #else
                 CHECK(setgid(UID) != -1);
                 CHECK(setuid(UID) != -1);
+    #endif
 #else
-                CHECK(setgid(65534) != -1);
-                CHECK(setuid(65534) != -1);
+    #ifdef ISOLATED_UID
+                CHECK(setgid(60534 + index) != -1);
+                CHECK(setuid(60534 + index) != -1);
+    #else
+                CHECK(setgid(60534) != -1);
+                CHECK(setuid(60534) != -1);
+    #endif
 #endif
 
 #ifdef MAX_CPU_TIMEOUT
@@ -397,12 +427,16 @@ int service_handler()
 
             if(pid != -1)
             {
-                cons[cons_len].addr  = client_addr.sin6_addr;
-                cons[cons_len].port  = clientPort;
-                cons[cons_len].pid   = pid;
-                cons[cons_len].start = now;
+                cons[index].addr  = client_addr.sin6_addr;
+                cons[index].port  = clientPort;
+                cons[index].pid   = pid;
+                cons[index].start = now;
                 cons_len ++;
-                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num);
+#ifdef ISOLATED_UID
+                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d,uid=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num, UID + index);
+#else
+                info_printf("Receive %s:%d (pid=%d,cons_len=%d,existed_num=%d,uid=%d)\n", ip_buf, clientPort, pid, cons_len, existed_num, UID);
+#endif
             }
             else
             {
@@ -439,23 +473,23 @@ int service_handler()
     return 1;
 }
 
-int handle_service_child()
+int handle_service_child(int option)
 {
-    int r = 0, status = 0;
+    int status = 0;
+    pid_t pid, pid2;
     int i, is_con = 0, index;
     time_t spend;
 
-    for(r = 1; r != 0 && r!= -1; )
+    for(pid = 1; pid != 0 && pid!= -1; )
     {
-        r = waitpid(-1, &status, WNOHANG);
-        if(r > 0)
+        pid = waitpid(-1, &status, option);
+        if(pid > 0)
         {
             is_con = 0;
-            for(i = 0; i < cons_len; i++)
+            for(i = 0; i < (sizeof(cons)/sizeof(*cons)); i++)
             {
-                if(cons[i].pid == r)
+                if(cons[i].pid == pid)
                 {
-                    if (cons_len > 0) cons_len --;
                     spend = time(NULL) - cons[i].start;
                     is_con = 1;
                     index = i;
@@ -467,35 +501,37 @@ int handle_service_child()
             {
                 if(is_con)
                 {
-                    info_printf("Pid: %d    exited,status=%d,time=%ds  (cons_len=%d)\n", r, WEXITSTATUS(status), spend, cons_len);
+                    if (cons_len > 0) cons_len --;
+                    info_printf("Pid: %d    exited,status=%d,time=%ds  (cons_len=%d)\n", pid, WEXITSTATUS(status), spend, cons_len);
                 }
                 else
                 {
-                    warning_printf("Pid: %d    exited,status=%d, not in cons  (cons_len=%d)\n", r, WEXITSTATUS(status), cons_len);
+                    warning_printf("Pid: %d    exited,status=%d, not in cons  (cons_len=%d)\n", pid, WEXITSTATUS(status), cons_len);
                 }
             }
             else if (WIFSIGNALED(status))
             {
                 if(is_con)
                 {
+                    if (cons_len > 0) cons_len --;
                     if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*))
                     {
-                        info_printf("Pid: %d    killed by signal %s,time=%ds  (cons_len=%d)\n", r, sig_name[WTERMSIG(status)], spend, cons_len);
+                        info_printf("Pid: %d    killed by signal %s,time=%ds  (cons_len=%d)\n", pid, sig_name[WTERMSIG(status)], spend, cons_len);
                     }
                     else
                     {
-                        info_printf("Pid: %d    killed by signal %d,time=%ds  (cons_len=%d)\n", r, WTERMSIG(status), spend, cons_len);
+                        info_printf("Pid: %d    killed by signal %d,time=%ds  (cons_len=%d)\n", pid, WTERMSIG(status), spend, cons_len);
                     }
                 }
                 else
                 {
                     if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*))
                     {
-                        warning_printf("Pid: %d    killed by signal %s  (cons_len=%d)\n", r, sig_name[WTERMSIG(status)], cons_len);
+                        warning_printf("Pid: %d    killed by signal %s  (cons_len=%d)\n", pid, sig_name[WTERMSIG(status)], cons_len);
                     }
                     else
                     {
-                        warning_printf("Pid: %d    killed by signal %d  (cons_len=%d)\n", r, WTERMSIG(status), cons_len);
+                        warning_printf("Pid: %d    killed by signal %d  (cons_len=%d)\n", pid, WTERMSIG(status), cons_len);
                     }
                 }
             }
@@ -503,25 +539,39 @@ int handle_service_child()
             {
                 if(WTERMSIG(status) < sizeof(sig_name)/sizeof(char*))
                 {
-                    warning_printf("Pid: %d    stopped by signal %s  (cons_len=%d)\n", r, sig_name[WSTOPSIG(status)], cons_len);
+                    warning_printf("Pid: %d    stopped by signal %s  (cons_len=%d)\n", pid, sig_name[WSTOPSIG(status)], cons_len);
                 }
                 else
                 {
-                    warning_printf("Pid: %d    stopped by signal %d  (cons_len=%d)\n", r, WSTOPSIG(status), cons_len);
+                    warning_printf("Pid: %d    stopped by signal %d  (cons_len=%d)\n", pid, WSTOPSIG(status), cons_len);
                 }
             }
             else if (WIFCONTINUED(status))
             {
-                warning_printf("Pid: %d    continued  (cons_len=%d)\n", r, cons_len);
+                warning_printf("Pid: %d    continued  (cons_len=%d)\n", pid, cons_len);
             }
 
             if(is_con)
             {
-                if(index != cons_len)
+#ifdef ISOLATED_UID
+                debug_printf("Terminate all processes with the UID of %d\n", UID + index);
+                CHECK((pid2 = fork()) != -1);
+                if(pid2 == 0)
                 {
-                    memcpy(&cons[index], &cons[cons_len], sizeof(*cons));
-                    memset(&cons[cons_len], 0, sizeof(*cons));
+    #ifdef UID
+                    CHECK(setgid(UID + index) != -1);
+                    CHECK(setuid(UID + index) != -1);
+    #else
+                    CHECK(setgid(60534 + index) != -1);
+                    CHECK(setuid(60534 + index) != -1);
+    #endif
+                    kill(-1, SIGKILL);
+                    while(1)
+                        exit(EXIT_FAILURE);
                 }
+                CHECK(waitpid(pid2, NULL, 0) == pid2);
+#endif
+                memset(&cons[index], 0, sizeof(*cons));
             }
         }
     }
@@ -559,7 +609,7 @@ int signal_hander()
 
         case SIGCHLD:
             ret_val = 1;
-            handle_service_child();
+            handle_service_child(WNOHANG);
             break;
         
         default:
@@ -579,6 +629,23 @@ int signal_hander()
 int clean_process()
 {
 #ifdef TIMEOUT
+#ifdef ISOLATED_UID
+    time_t now;
+    int i;
+
+    now = time(NULL);
+    for(i = 0; i < (sizeof(cons)/sizeof(*cons)); i++)
+    {
+        if(now - cons[i].start > TIMEOUT)
+        {
+#ifdef UID
+            kill(UID + i, SIGKILL);
+#else
+            kill(60534 + i, SIGKILL);
+#endif
+        }
+    }
+#else
     struct dirent *d;
     int fd;
     char buf[0x400];
@@ -623,7 +690,7 @@ int clean_process()
 #ifdef UID
                     if(sb.st_uid == UID && (time(NULL) - sb.st_ctime) > TIMEOUT)
 #else
-                    if(sb.st_uid == 65534 && (time(NULL) - sb.st_ctime) > TIMEOUT)
+                    if(sb.st_uid == 60534 && (time(NULL) - sb.st_ctime) > TIMEOUT)
 #endif
                     {
                         kill(pid, SIGKILL);
@@ -638,6 +705,24 @@ int clean_process()
 
     CHECK(close(fd) != -1);
 #endif
+#endif
+    return 0;
+}
+
+int end_all_process()
+{
+    int i;
+
+    for(i = 0; i < (sizeof(cons)/sizeof(*cons)); i++)
+    {
+        if(cons[i].pid != 0)
+        {
+            kill(cons[i].pid, SIGKILL);
+        }
+    }
+    
+    handle_service_child(0);
+
     return 0;
 }
 
@@ -681,6 +766,9 @@ int main()
         }
         clean_process();
     }
+
+    end_all_process();
     info_printf("Service end\n");
+
     return 0;
 }
