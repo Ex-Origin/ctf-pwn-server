@@ -30,12 +30,12 @@
 
 // The limitation of resource
 #define MAX_CPU_TIMEOUT 60
+#define MAX_CONNECTION  256
 #ifndef ISOLATED_UID
-#define MAX_PROCESS     256
+#define MAX_PROCESS     MAX_CONNECTION
 #else
 #define MAX_PROCESS     8
 #endif
-#define MAX_CONNECTION  256
 #define MAX_MEMORY      0x40000000; // 1024M
 
 int start_service()
