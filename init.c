@@ -44,7 +44,7 @@ int start_service()
     return execv(child_args[0], child_args);
 }
 
-#define VERSION "2.1.1"
+#define VERSION "2.2.0"
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -600,7 +600,7 @@ int signal_hander()
     return ret_val;
 }
 
-int clean_process()
+int clean_timeout_process()
 {
     time_t now;
     int i;
@@ -608,9 +608,10 @@ int clean_process()
     now = time(NULL);
     for(i = 0; i < (sizeof(cons)/sizeof(*cons)); i++)
     {
-        if(now - cons[i].start > TIMEOUT)
+        if(cons[i].pid != 0 && now - cons[i].start > TIMEOUT)
         {
-            kill(UID_START + i, SIGKILL);
+            info_printf("Killed timeout process (pid=%d)\n", cons[i].pid);
+            kill(cons[i].pid, SIGKILL);
         }
     }
     return 0;
@@ -636,7 +637,7 @@ int end_all_process()
 int main()
 {
     struct epoll_event ev, events[2];
-    int run, event_num, i;
+    int run, event_num, i, wait_time;
 
     setvbuf(stdin, NULL, _IOLBF, 0);
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -659,7 +660,15 @@ int main()
     run = 1;
     while(run)
     {
-        event_num = epoll_wait(epoll_fd, events, sizeof(events)/sizeof(events[0]), 1000);
+        if(cons_len == 0)
+        {
+            wait_time = -1;
+        }
+        else
+        {
+            wait_time = 1000;
+        }
+        event_num = epoll_wait(epoll_fd, events, sizeof(events)/sizeof(events[0]), wait_time);
         for(i = 0; i < event_num; i++)
         {
             if(events[i].data.fd == signal_fd)
@@ -671,7 +680,7 @@ int main()
                 run = service_handler();
             }
         }
-        clean_process();
+        clean_timeout_process();
     }
 
     end_all_process();
