@@ -44,7 +44,7 @@ int start_service()
     return execv(child_args[0], child_args);
 }
 
-#define VERSION "2.2.0"
+#define VERSION "2.2.1"
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -657,6 +657,11 @@ int main()
     monitor_fd(server_socket);
 
     info_printf("Service start (pid=%d,version=%s)\n", getpid(), VERSION);
+
+    srand(time(NULL));
+    cons_index = (rand() % (sizeof(cons)/sizeof(*cons)));
+    info_printf("Randomize cons_index=%u\n", cons_index);
+
     run = 1;
     while(run)
     {
