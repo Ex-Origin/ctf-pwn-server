@@ -44,7 +44,7 @@ int start_service()
     return execv(child_args[0], child_args);
 }
 
-#define VERSION "2.2.1"
+#define VERSION "2.2.2"
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -634,6 +634,28 @@ int end_all_process()
     return 0;
 }
 
+int randomize_index()
+{
+    int fd;
+
+    fd = open("/dev/urandom", O_RDONLY);
+    if(fd != -1)
+    {
+        CHECK(read(fd, &cons_index, sizeof(cons_index)) == sizeof(cons_index));
+        cons_index = (cons_index % (sizeof(cons)/sizeof(*cons)));
+        close(fd);
+    }
+    else
+    {
+        srand(time(NULL));
+        cons_index = (rand() % (sizeof(cons)/sizeof(*cons)));
+    }
+
+    info_printf("Randomize cons_index=%u\n", cons_index);
+
+    return 0;
+}
+
 int main()
 {
     struct epoll_event ev, events[2];
@@ -658,9 +680,7 @@ int main()
 
     info_printf("Service start (pid=%d,version=%s)\n", getpid(), VERSION);
 
-    srand(time(NULL));
-    cons_index = (rand() % (sizeof(cons)/sizeof(*cons)));
-    info_printf("Randomize cons_index=%u\n", cons_index);
+    randomize_index();
 
     run = 1;
     while(run)
