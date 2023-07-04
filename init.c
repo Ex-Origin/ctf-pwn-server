@@ -44,7 +44,7 @@ int start_service()
     return execv(child_args[0], child_args);
 }
 
-#define VERSION "2.2.2"
+#define VERSION "2.2.3"
 
 /**
  * The value must be TRUE, or the program will break down.
@@ -223,7 +223,7 @@ int init_socket()
     return 0;
 }
 
-int set_sig_hander()
+int set_sig_handler()
 {
     sigset_t new_mask;
 
@@ -553,7 +553,7 @@ int handle_service_child(int option)
     return 0;
 }
 
-int signal_hander()
+int signal_handler()
 {
     pid_t pid;
     struct signalfd_siginfo fdsi;
@@ -674,7 +674,7 @@ int main()
     CHECK((epoll_fd = epoll_create(2)) != -1);
 
     init_socket();
-    set_sig_hander();
+    set_sig_handler();
     monitor_fd(signal_fd);
     monitor_fd(server_socket);
 
@@ -698,7 +698,7 @@ int main()
         {
             if(events[i].data.fd == signal_fd)
             {
-                run = signal_hander();
+                run = signal_handler();
             }
             else if(events[i].data.fd == server_socket)
             {
