@@ -1,23 +1,8 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <stdarg.h>
-#include <signal.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <sys/epoll.h>
-#include <sys/socket.h>
-#include <sys/signalfd.h>
-#include <sys/prctl.h>
-#include <sys/resource.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <sys/syscall.h>
 #include "ctf-pwn-server.h"
 
 int main(int argc, char *argv[])
