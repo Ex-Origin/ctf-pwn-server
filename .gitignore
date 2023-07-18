@@ -1,2 +1,6 @@
 .vscode
-init
+/build/
+/release/
+/.vscode/
+/build.sh
+/docker/ctf-pwn-server
