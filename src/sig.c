@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
+#include <errno.h>
 #include <sys/signalfd.h>
 #include <sys/wait.h>
 #include "ctf-pwn-server.h"
@@ -179,13 +180,13 @@ int signal_handler()
             break;
         
         default:
-            warning_printf("Read unexpected signal %d  %s:%d  %m\n", fdsi.ssi_signo, __FILE__, __LINE__);
+            warning_printf("read unexpected signal %d (%s)  %s:%d\n", fdsi.ssi_signo, strerror(errno), __FILE__, __LINE__);
             break;
         }
     }
     else
     {
-        error_printf("read error  %s:%d  %m\n", __FILE__, __LINE__);
+        error_printf("read error (%s)  %s:%d\n", strerror(errno), __FILE__, __LINE__);
         exit(EXIT_FAILURE);
     }
 

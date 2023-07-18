@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
 #include <sys/resource.h>
 #include <sys/prctl.h>
 #include <arpa/inet.h>
@@ -183,7 +184,7 @@ int service_handler()
                 warning_printf("Failed at %s:%d, fork error : Resource temporarily unavailable (cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, cons_len, existed_num);
                 if(write(client_socket, "Resource temporarily unavailable\n", 33) == -1)
                 {
-                    warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
+                    warning_printf("write error (%s)  %s:%d\n", strerror(errno), __FILE__, __LINE__);
                 }
             }
         }
@@ -192,7 +193,7 @@ int service_handler()
             info_printf("Block %s:%d (cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, cons_len, existed_num);
             if(write(client_socket, "There are excessive connections from your IP\n", 45) == -1)
             {
-                warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
+                warning_printf("write error (%s)  %s:%d\n", strerror(errno), __FILE__, __LINE__);
             }
         }
     }
@@ -202,7 +203,7 @@ int service_handler()
         if(write(client_socket, "There are no more resources to start a new child process, "
                                 "please wait a while or connect to the administrator\n", 110) == -1)
         {
-            warning_printf("Write error  %s:%d  %m\n", __FILE__, __LINE__);
+            warning_printf("write error (%s)  %s:%d\n", strerror(errno), __FILE__, __LINE__);
         }
     }
 

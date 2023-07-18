@@ -1,7 +1,7 @@
 #ifndef _H_CTF_PWN_SERVER_
 #define _H_CTF_PWN_SERVER_
 
-#define VERSION "2.2.5"
+#define VERSION "2.2.6"
 
 #include <stdio.h>
 #include <stdlib.h>
