@@ -1,12 +1,19 @@
 
 # CTF-Pwn-Server
 
-**A daemon process specialized in CTF-Pwn service for competitions**
+**A service process specialized in CTF-Pwn service for competitions**
+
+## Features
 
 * It has no dependency on other package.
-* Be similar to xinetd
+* Be similar to [xinetd](https://linux.die.net/man/5/xinetd.conf).
 * It could be used cross-platform.
-* More low overhead than conventional methods
+* More low overhead than conventional methods.
+* Every connection is allocated a distinct UID to safeguard against interference from other users.
+* Builtin timeout function, when activated, will kill all processes belonging to the specified UID to prevent the presence of Trojan horses.
+* Remove most of [Linux capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html) to mitigate potential attacks by users.
+* Builtin chroot function.
+* More precise log information.
 
 ## Usage
 
