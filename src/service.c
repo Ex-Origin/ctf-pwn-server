@@ -200,8 +200,8 @@ int service_handler()
     else
     {
         warning_printf("Failed at %s:%d, run out of resources (cons_len=%d,existed_num=%d)\n", ip_buf, clientPort, cons_len, existed_num);
-        if(write(client_socket, "There are no more resources to start a new child process, "
-                                "please wait a while or connect to the administrator\n", 110) == -1)
+        if(write(client_socket, "There are currently insufficient resources to initiate a new child process, "
+                                "please wait a moment or contact the administrator for assistance\n", 141) == -1)
         {
             warning_printf("write error (%s)  %s:%d\n", strerror(errno), __FILE__, __LINE__);
         }
