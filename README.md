@@ -29,40 +29,51 @@ General:
 
   --port=PORT (default: 10000)
     Specify local port for remote connects
+    Environment variable: CTF_PWN_SERVER_PORT
 
   --execve_argv=CMD
     service argv
+    Environment variable: CTF_PWN_SERVER_EXECVE_ARGV
 
   --chroot_path=PATH
     Set the chroot path for the service
+    Environment variable: CTF_PWN_SERVER_CHROOT_PATH
 
   --per_source=LIMIT (default: 16)
     the maximum instances of this service per source IP address
+    Environment variable: CTF_PWN_SERVER_PER_SOURCE
 
   --timeout=LIMIT (default: 10m)
     Set a timeout for the service, for example, 1 ,1s, 1m, 1h, 1d
+    Environment variable: CTF_PWN_SERVER_TIMEOUT
 
   --max_connection=MAX_CON (default: 100)
     Limits the amount of incoming connections
+    Environment variable: CTF_PWN_SERVER_MAX_CONNECTION
 
   --uid_start=UID (default: 23000)
     Specify the UID range for the service to be [UID, UID+MAX_CON)
     Every connection possesses an individual UID
+    Environment variable: CTF_PWN_SERVER_UID_START
 
   --rlimit_cpu=LIMIT (default: 1m)
     Set the maximum number of CPU seconds that every connection may use
     For example, 1 ,1s, 1m, 1h, 1d
+    Environment variable: CTF_PWN_SERVER_RLIMIT_CPU
 
   --rlimit_process=LIMIT (default: 8)
     Set the maximum number of user processes that every connection may use
+    Environment variable: CTF_PWN_SERVER_RLIMIT_PROCESS
 
   --rlimit_memory=LIMIT (default: 1024m)
     Set the maximum number of user memory that every connection may use
     For example, 1 ,1b, 1k, 1m, 1g
+    Environment variable: CTF_PWN_SERVER_RLIMIT_MEMORY
 
   --time_offset=OFFSET (default: +0h)
     Set the offset of time for log
     For example, 0, +0h, -8h, +8h
+    Environment variable: CTF_PWN_SERVER_TIME_OFFSET
 
 Report bugs to "<https://github.com/Ex-Origin/ctf-pwn-server/issues>"
 ```

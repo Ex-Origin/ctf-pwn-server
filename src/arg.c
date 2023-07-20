@@ -33,40 +33,51 @@ int help()
                     "\n"
                     "  --port=PORT (default: 10000)\n"
                     "    Specify local port for remote connects\n"
+                    "    Environment variable: CTF_PWN_SERVER_PORT\n"
                     "\n"
                     "  --execve_argv=CMD\n"
                     "    service argv\n"
+                    "    Environment variable: CTF_PWN_SERVER_EXECVE_ARGV\n"
                     "\n"
                     "  --chroot_path=PATH\n"
                     "    Set the chroot path for the service\n"
+                    "    Environment variable: CTF_PWN_SERVER_CHROOT_PATH\n"
                     "\n"
                     "  --per_source=LIMIT (default: 16)\n"
                     "    the maximum instances of this service per source IP address\n"
+                    "    Environment variable: CTF_PWN_SERVER_PER_SOURCE\n"
                     "\n"
                     "  --timeout=LIMIT (default: 10m)\n"
                     "    Set a timeout for the service, for example, 1 ,1s, 1m, 1h, 1d\n"
+                    "    Environment variable: CTF_PWN_SERVER_TIMEOUT\n"
                     "\n"
                     "  --max_connection=MAX_CON (default: 100)\n"
                     "    Limits the amount of incoming connections\n"
+                    "    Environment variable: CTF_PWN_SERVER_MAX_CONNECTION\n"
                     "\n"
                     "  --uid_start=UID (default: 23000)\n"
                     "    Specify the UID range for the service to be [UID, UID+MAX_CON)\n"
                     "    Every connection possesses an individual UID\n"
+                    "    Environment variable: CTF_PWN_SERVER_UID_START\n"
                     "\n"
                     "  --rlimit_cpu=LIMIT (default: 1m)\n"
                     "    Set the maximum number of CPU seconds that every connection may use\n"
                     "    For example, 1 ,1s, 1m, 1h, 1d\n"
+                    "    Environment variable: CTF_PWN_SERVER_RLIMIT_CPU\n"
                     "\n"
                     "  --rlimit_process=LIMIT (default: 8)\n"
                     "    Set the maximum number of user processes that every connection may use\n"
+                    "    Environment variable: CTF_PWN_SERVER_RLIMIT_PROCESS\n"
                     "\n"
                     "  --rlimit_memory=LIMIT (default: 1024m)\n"
                     "    Set the maximum number of user memory that every connection may use\n"
                     "    For example, 1 ,1b, 1k, 1m, 1g\n"
+                    "    Environment variable: CTF_PWN_SERVER_RLIMIT_MEMORY\n"
                     "\n"
                     "  --time_offset=OFFSET (default: +0h)\n"
                     "    Set the offset of time for log\n"
                     "    For example, 0, +0h, -8h, +8h\n"
+                    "    Environment variable: CTF_PWN_SERVER_TIME_OFFSET\n"
                     "\n"
                     "Report bugs to \"<https://github.com/Ex-Origin/ctf-pwn-server/issues>\"\n"
     );
@@ -214,6 +225,69 @@ int parsing_memory(char *memory_str)
     return result;
 }
 
+int parsing_env()
+{
+    char *tmp = NULL;
+
+    if((tmp = getenv("CTF_PWN_SERVER_PORT")))
+    {
+        arg_port = atoi(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_PORT") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_EXECVE_ARGV")))
+    {
+        arg_execve_argv = parsing_execve_str(strdup(tmp));
+        CHECK(unsetenv("CTF_PWN_SERVER_EXECVE_ARGV") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_CHROOT_PATH")))
+    {
+        arg_chroot_path = strdup(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_CHROOT_PATH") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_PER_SOURCE")))
+    {
+        arg_per_source = atoi(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_PER_SOURCE") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_TIMEOUT")))
+    {
+        arg_timeout = parsing_time(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_TIMEOUT") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_MAX_CONNECTION")))
+    {
+        arg_max_connection = atoi(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_MAX_CONNECTION") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_UID_START")))
+    {
+        arg_uid_start = atoi(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_UID_START") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_RLIMIT_CPU")))
+    {
+        arg_rlimit_cpu = parsing_time(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_RLIMIT_CPU") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_RLIMIT_PROCESS")))
+    {
+        arg_rlimit_process = atoi(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_RLIMIT_PROCESS") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_RLIMIT_MEMORY")))
+    {
+        arg_rlimit_memory = parsing_memory(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_RLIMIT_MEMORY") == 0);
+    }
+    if((tmp = getenv("CTF_PWN_SERVER_TIME_OFFSET")))
+    {
+        arg_port = parsing_time(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_TIME_OFFSET") == 0);
+    }
+
+    return 0;
+}
+
 int parsing_argv(int argc, char *argv[])
 {
     int opt;
@@ -247,11 +321,11 @@ int parsing_argv(int argc, char *argv[])
             }else if(strcmp(long_options[option_index].name, "port") == 0){
                 arg_port = atoi(optarg);
             }else if(strcmp(long_options[option_index].name, "execve_argv") == 0){
-                arg_execve_argv = parsing_execve_str(optarg);
-            }else if(strcmp(long_options[option_index].name, "execve_argv") == 0){
-                arg_execve_argv = parsing_execve_str(optarg);
+                arg_execve_argv = parsing_execve_str(strdup(optarg));
             }else if(strcmp(long_options[option_index].name, "chroot_path") == 0){
-                arg_chroot_path = optarg;
+                arg_chroot_path = strdup(optarg);
+            }else if(strcmp(long_options[option_index].name, "per_source") == 0){
+                arg_per_source = atoi(optarg);
             }else if(strcmp(long_options[option_index].name, "timeout") == 0){
                 arg_timeout = parsing_time(optarg);
             }else if(strcmp(long_options[option_index].name, "max_connection") == 0){
