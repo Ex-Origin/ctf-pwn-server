@@ -14,6 +14,7 @@
 * Remove most of [Linux capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html) to mitigate potential attacks by users.
 * Builtin chroot function.
 * More precise log information.
+* It is compatible with AWD.
 
 ## Usage
 
