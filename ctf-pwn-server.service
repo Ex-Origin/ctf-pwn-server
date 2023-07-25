@@ -4,7 +4,7 @@ Documentation=https://github.com/Ex-Origin/ctf-pwn-server
 After=network.target
 
 [Service]
-ExecStart=/ctf-pwn-server --port=10000 --execve_argv=/bin/sh --chroot_path=/home/ctf -per_source=8 --timeout=1m --max_connection=100 --uid_start=23000 --rlimit_cpu=8s --rlimit_process=4 --rlimit_memory=64m --time_offset=+0h
+ExecStart=/ctf-pwn-server --port=10000 --execve_argv=/bin/sh --chroot_path=/home/ctf --per_source=8 --timeout=1m --max_connection=100 --uid_start=23000 --rlimit_cpu=8s --rlimit_process=4 --rlimit_memory=64m --time_offset=+0h
 StandardOutput=append:/var/log/ctf-pwn-server.log
 StandardError=append:/var/log/ctf-pwn-server.log
 
