@@ -8,6 +8,7 @@
 
 char **arg_execve_argv  = NULL;
 char *arg_chroot_path   = NULL;
+char *arg_chdir_path    = NULL;
 int arg_port            = 10000;
 int arg_per_source      = 16;
 int arg_timeout         = 10 * 60;
@@ -42,6 +43,10 @@ int help()
                     "  --chroot_path=PATH\n"
                     "    Set the chroot path for the service\n"
                     "    Environment variable: CTF_PWN_SERVER_CHROOT_PATH\n"
+                    "\n"
+                    "  --chdir_path=PATH\n"
+                    "    Set the current working path for the service\n"
+                    "    Environment variable: CTF_PWN_SERVER_CHDIR_PATH\n"
                     "\n"
                     "  --per_source=LIMIT (default: 16)\n"
                     "    the maximum instances of this service per source IP address\n"
@@ -244,6 +249,11 @@ int parsing_env()
         arg_chroot_path = strdup(tmp);
         CHECK(unsetenv("CTF_PWN_SERVER_CHROOT_PATH") == 0);
     }
+    if((tmp = getenv("CTF_PWN_SERVER_CHDIR_PATH")))
+    {
+        arg_chdir_path = strdup(tmp);
+        CHECK(unsetenv("CTF_PWN_SERVER_CHDIR_PATH") == 0);
+    }
     if((tmp = getenv("CTF_PWN_SERVER_PER_SOURCE")))
     {
         arg_per_source = atoi(tmp);
@@ -298,6 +308,7 @@ int parsing_argv(int argc, char *argv[])
         {"port",            required_argument, 0,  0 },
         {"execve_argv",     required_argument, 0,  0 },
         {"chroot_path",     required_argument, 0,  0 },
+        {"chdir_path",      required_argument, 0,  0 },
         {"per_source",      required_argument, 0,  0 },
         {"timeout",         required_argument, 0,  0 },
         {"max_connection",  required_argument, 0,  0 },
@@ -324,6 +335,8 @@ int parsing_argv(int argc, char *argv[])
                 arg_execve_argv = parsing_execve_str(strdup(optarg));
             }else if(strcmp(long_options[option_index].name, "chroot_path") == 0){
                 arg_chroot_path = strdup(optarg);
+            }else if(strcmp(long_options[option_index].name, "chdir_path") == 0){
+                arg_chdir_path = strdup(optarg);
             }else if(strcmp(long_options[option_index].name, "per_source") == 0){
                 arg_per_source = atoi(optarg);
             }else if(strcmp(long_options[option_index].name, "timeout") == 0){

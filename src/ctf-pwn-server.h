@@ -1,7 +1,7 @@
 #ifndef _H_CTF_PWN_SERVER_
 #define _H_CTF_PWN_SERVER_
 
-#define VERSION "2.2.8"
+#define VERSION "2.3.0"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +25,7 @@ int parsing_argv(int argc, char *argv[]);
 
 extern char **arg_execve_argv;
 extern char *arg_chroot_path;
+extern char *arg_chdir_path;
 extern int arg_port;
 extern int arg_per_source;
 extern int arg_timeout;

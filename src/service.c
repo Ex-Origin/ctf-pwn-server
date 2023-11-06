@@ -135,6 +135,11 @@ int service_handler()
                     CHECK(chdir("/") != -1);
                 }
 
+                if(arg_chdir_path)
+                {
+                    CHECK(chdir(arg_chdir_path) != -1);
+                }
+
                 sandbox();
 
                 CHECK(setgid(arg_uid_start + index) != -1);

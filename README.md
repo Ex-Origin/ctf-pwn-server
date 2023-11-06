@@ -40,6 +40,10 @@ General:
     Set the chroot path for the service
     Environment variable: CTF_PWN_SERVER_CHROOT_PATH
 
+  --chdir_path=PATH
+    Set the current working path for the service
+    Environment variable: CTF_PWN_SERVER_CHDIR_PATH
+
   --per_source=LIMIT (default: 16)
     the maximum instances of this service per source IP address
     Environment variable: CTF_PWN_SERVER_PER_SOURCE
